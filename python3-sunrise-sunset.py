@@ -6,8 +6,9 @@ from astral.location import LocationInfo
 
 # Infinite loop to continuously check the calculated times
 while True:
-    current_time = datetime.datetime.now().replace(second=0, microsecond=0)
+    pass
 
+    current_time = datetime.datetime.now().replace(second=0, microsecond=0)
 
     # Method to calculate sunrise and sunset times using Astral library
     def get_sunrise_sunset():
@@ -105,7 +106,7 @@ while True:
 
     # code debugging
 
-    # day_sharp_webcam.execute()
+#    day_sharp_webcam.execute()
 
     # Print status information
     print(f"Current Time: {current_time}")
@@ -129,4 +130,4 @@ while True:
 
     # Delay between target_time checks (adjust as needed)
     # time.sleep(30) for 30 seconds to check twice per minute
-    time.sleep(30)
+    time.sleep(20)
