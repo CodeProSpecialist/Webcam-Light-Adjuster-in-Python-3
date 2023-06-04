@@ -13,10 +13,11 @@ while True:
     # Method to calculate sunrise and sunset times using Astral library
     def get_sunrise_sunset():
         # Create a location object with latitude, longitude, and timezone values
+         # latitude + , longitude -
         location = LocationInfo(
-            "Emporia", "Kansas", "US/Central",
-            latitude=38.4039, longitude=-96.1817
-        )
+            "Kansas City", "Missouri", "US/Central",
+            latitude=39.0997, longitude=-94.5786   
+        )          
 
         # Calculate sunrise and sunset times for today
         s = sun(location.observer, date=datetime.date.today(), tzinfo=location.timezone)
