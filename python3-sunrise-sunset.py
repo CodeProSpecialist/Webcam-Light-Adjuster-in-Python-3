@@ -30,7 +30,7 @@ while True:
 
     class PreSunsetSharpWebcam:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[0] - datetime.timedelta(minutes=7)
+            self.target_time = get_sunrise_sunset()[0] - datetime.timedelta(minutes=7)   # (minutes = 7)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
@@ -39,7 +39,7 @@ while True:
 
     class DaySharpWebcam:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[0] + datetime.timedelta(minutes=26)
+            self.target_time = get_sunrise_sunset()[0] + datetime.timedelta(minutes=26)   # (minutes = 26)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
@@ -48,7 +48,7 @@ while True:
 
     class BrightSunSharpWebcam:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[0] + datetime.timedelta(minutes=122)
+            self.target_time = get_sunrise_sunset()[0] + datetime.timedelta(minutes=122)    # (minutes = 122)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
@@ -57,7 +57,7 @@ while True:
 
     class DaySharpWebcam2:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[1] - datetime.timedelta(minutes=39)
+            self.target_time = get_sunrise_sunset()[1] - datetime.timedelta(minutes=39)    # (minutes = 39)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
@@ -66,7 +66,7 @@ while True:
 
     class PreSunsetSharpWebcam2:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[1] - datetime.timedelta(minutes=10)
+            self.target_time = get_sunrise_sunset()[1] - datetime.timedelta(minutes=10)     # (minutes = 10)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
@@ -75,7 +75,7 @@ while True:
 
     class NightSharpWebcam:
         def __init__(self):
-            self.target_time = get_sunrise_sunset()[1] + datetime.timedelta(minutes=14)
+            self.target_time = get_sunrise_sunset()[1] + datetime.timedelta(minutes=14)  # (minutes = 14)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
