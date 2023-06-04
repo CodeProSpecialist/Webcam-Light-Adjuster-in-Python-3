@@ -1,6 +1,8 @@
 # Webcam-Light-Adjuster-in-Python-3
 The Python 3 version of a Webcam Light Adjuster that is based on the sunrise and sunset times. 
 
+This software is currently configured for an Outdoor based webcam view. 
+
 This software has been tested to work in Ubuntu Linux to automatically adjust webcam light 
 depending upon the sunrise and sunset times. It was designed to work best with a 1080p HD usb webcam. 
 
