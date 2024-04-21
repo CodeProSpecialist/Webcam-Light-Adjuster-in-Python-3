@@ -8,10 +8,6 @@ depending upon the sunrise and sunset times. It was designed to work best with a
 
 This Python 3 code is going to work well by keeping all of the project files in the same folder or directory. 
 
-# first making sure python3.11 can install packages by renaming EXTERNALLY-MANAGED to EXTERNALLY-MANAGED.old
-
-sudo mv /usr/lib/python3.11/EXTERNALLY-MANAGED /usr/lib/python3.11/EXTERNALLY-MANAGED.old 
-
 Next, we can utilize pip3 to install the required python 3 modules like this:
 
 pip3 install datetime
