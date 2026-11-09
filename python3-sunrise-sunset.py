@@ -81,6 +81,17 @@ while True:
             subprocess.run(['python3', 'night-sharp-webcam.py'])
 
 
+    # The legacy Perl repo applies night a second time at sunset + 30, because a
+    # camera does not always take the settings on the first attempt. Same here.
+    class NightSharpWebcam2:
+        def __init__(self):
+            self.target_time = get_sunrise_sunset()[1] + datetime.timedelta(minutes=30)  # (minutes = 30)
+            self.target_time = self.target_time.replace(second=0, microsecond=0)
+
+        def execute(self):
+            subprocess.run(['python3', 'night-sharp-webcam.py'])
+
+
     # Create instances of each subprocess class
     golden_morning_sharp_webcam = GoldenMorningSharpWebcam()
     day_sharp_webcam = DaySharpWebcam()
@@ -88,6 +99,7 @@ while True:
     day_sharp_webcam2 = DaySharpWebcam2()
     pre_sunset_sharp_webcam2 = PreSunsetSharpWebcam2()
     night_sharp_webcam = NightSharpWebcam()
+    night_sharp_webcam2 = NightSharpWebcam2()
 
     # Check if the current time matches any of the target times and execute the corresponding subprocess
     if current_time == golden_morning_sharp_webcam.target_time:
@@ -102,6 +114,8 @@ while True:
         pre_sunset_sharp_webcam2.execute()
     elif current_time == night_sharp_webcam.target_time:
         night_sharp_webcam.execute()
+    elif current_time == night_sharp_webcam2.target_time:
+        night_sharp_webcam2.execute()
 
     # code debugging
 
@@ -124,6 +138,8 @@ while True:
     print("Pre-Sunset Sharp Webcam Time: ", pre_sunset_sharp_webcam2.target_time)
 
     print("Night Sharp Webcam Time: ", night_sharp_webcam.target_time)
+
+    print("Second Night Sharp Webcam Time: ", night_sharp_webcam2.target_time)
 
     # code debugging
 

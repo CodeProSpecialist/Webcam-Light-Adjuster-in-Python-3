@@ -82,3 +82,21 @@ Every preset uses a cold white balance (manual 2800). Note that
 light to be, not the look of the picture: a low value tells the camera the light
 is warm, so it compensates with blue and the result looks cold. Change `COLD_WB`
 at the top of `webcam_presets.py` to adjust it.
+
+## Light change times
+
+All three webcam programs now change the light at the same moments, taken from
+the legacy Perl repo (Perl-Outdoor-Webcam-Light-Adjuster):
+
+| Time          | Preset         |
+|---------------|----------------|
+| sunrise - 7   | golden morning |
+| sunrise + 26  | day            |
+| sunrise + 122 | bright sun     |
+| sunset - 39   | day again      |
+| sunset - 10   | golden evening |
+| sunset + 14   | night          |
+| sunset + 30   | night again    |
+
+Night is applied twice because a camera does not always take the settings on
+the first attempt. Edit the minute offsets in `python3-sunrise-sunset.py`.
