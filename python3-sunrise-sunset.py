@@ -6,8 +6,6 @@ from astral.location import LocationInfo
 
 # Infinite loop to continuously check the calculated times
 while True:
-    pass
-
     current_time = datetime.datetime.now().replace(second=0, microsecond=0)
 
     # Method to calculate sunrise and sunset times using Astral library
@@ -29,13 +27,13 @@ while True:
         # Define the classes for each subprocess
 
 
-    class PreSunsetSharpWebcam:
+    class GoldenMorningSharpWebcam:
         def __init__(self):
             self.target_time = get_sunrise_sunset()[0] - datetime.timedelta(minutes=7)   # (minutes = 7)
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'pre-sunset-sharp-webcam.py'])
+            subprocess.run(['python3', 'post-sunrise-sharp-webcam.py'])
 
 
     class DaySharpWebcam:
@@ -84,7 +82,7 @@ while True:
 
 
     # Create instances of each subprocess class
-    pre_sunset_sharp_webcam = PreSunsetSharpWebcam()
+    golden_morning_sharp_webcam = GoldenMorningSharpWebcam()
     day_sharp_webcam = DaySharpWebcam()
     bright_sun_sharp_webcam = BrightSunSharpWebcam()
     day_sharp_webcam2 = DaySharpWebcam2()
@@ -92,8 +90,8 @@ while True:
     night_sharp_webcam = NightSharpWebcam()
 
     # Check if the current time matches any of the target times and execute the corresponding subprocess
-    if current_time == pre_sunset_sharp_webcam.target_time:
-        pre_sunset_sharp_webcam.execute()
+    if current_time == golden_morning_sharp_webcam.target_time:
+        golden_morning_sharp_webcam.execute()
     elif current_time == day_sharp_webcam.target_time:
         day_sharp_webcam.execute()
     elif current_time == bright_sun_sharp_webcam.target_time:
@@ -115,7 +113,7 @@ while True:
     print(f"Sunset Time: {get_sunrise_sunset()[1]}")
     print(f"Timezone: US/Central")
 
-    print("Pre-Sunrise Sharp Webcam Time: ", pre_sunset_sharp_webcam.target_time)
+    print("Golden Morning Sharp Webcam Time: ", golden_morning_sharp_webcam.target_time)
 
     print("Day Sharp Webcam Time: ", day_sharp_webcam.target_time)
 

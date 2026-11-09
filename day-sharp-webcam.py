@@ -1,49 +1,32 @@
-import subprocess
-import time
+#!/usr/bin/env python3
+"""Daytime settings.
 
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'sharpness=250'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'brightness=128'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'contrast=32'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'saturation=32'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'gain=64'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_auto=1'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_absolute=2047'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_auto_priority=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'focus_absolute=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'focus_auto=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'zoom_absolute=1'])
+The camera settings themselves now live in webcam_presets.py, which reads the
+control list from whichever camera is plugged in and picks the matching
+values. The older webcam and the ONN webcam use different control names and
+different ranges, so one hard-coded set of numbers cannot serve both.
 
-time.sleep(2)
+This wrapper is kept so existing habits and the scheduler keep working:
+    python3 day-sharp-webcam.py
+is the same as
+    python3 webcam_presets.py day
+"""
 
-# BELOW IS DAY SETTINGS
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'sharpness=250'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'brightness=153'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'contrast=32'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'saturation=32'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'gain=104'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_auto=1'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_absolute=4'])
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_auto_priority=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'focus_absolute=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'focus_auto=0'])
-# time.sleep(4)
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'zoom_absolute=1'])
+import os
+import sys
 
-time.sleep(3)
+# Look for the engine next to this script, then in the home directory, then in
+# the current directory, because these scripts get copied to ~ and run both ways.
+for d in (os.path.dirname(os.path.abspath(__file__)),
+          os.path.expanduser('~'), os.getcwd()):
+    if os.path.isfile(os.path.join(d, 'webcam_presets.py')):
+        sys.path.insert(0, d)
+        break
+else:
+    sys.exit('webcam_presets.py not found next to this script, in $HOME, '
+             'or in the current directory.')
 
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_absolute=100'])
+from webcam_presets import apply_preset   # noqa: E402
 
-time.sleep(3)
-
-subprocess.call(['v4l2-ctl', '--set-ctrl', 'exposure_absolute=4'])
-
-time.sleep(2)
-
-raise SystemExit
+device = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
+sys.exit(0 if apply_preset('day', device) else 1)
