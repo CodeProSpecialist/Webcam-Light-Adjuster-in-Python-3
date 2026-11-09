@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared webcam preset engine.
 
-    python3 webcam_presets.py night|golden-am|day|bright-sun|golden-pm [/dev/videoN]
+    python3 webcam_presets.py night|night-mono|golden-am|day|bright-sun|golden-pm [/dev/videoN]
 
 Why this exists: these scripts used to hard-code one camera's numbers. The
 older webcam uses the pre-5.10 kernel control names (exposure_auto,
@@ -25,23 +25,55 @@ import subprocess
 import sys
 import time
 
-VALID = ('night', 'golden_am', 'day', 'bright_sun', 'golden_pm')
+# Do not traceback when the output is piped into something like `head`. Set at
+# import time so the thin wrapper scripts get it too, not only a direct run.
+try:
+    import signal
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except (ImportError, AttributeError, ValueError):
+    pass
+
+VALID = ('night', 'night_mono', 'golden_am', 'day', 'bright_sun', 'golden_pm')
 
 # On both APIs the manual setting for auto exposure is 1.
 AE_MANUAL = 1
 
+# Cold white balance on every preset.
+#
+# white_balance_temperature sets the colour temperature the camera ASSUMES the
+# light to be, not the look of the picture. A low value tells the camera the
+# light is warm, so it compensates with blue and the picture comes out cold.
+# 2800 is the coldest-looking setting most webcams accept; anything lower is
+# clamped to the camera's own minimum.
+COLD_WB = 2800
+
 # legacy: the numbers already tuned for the older camera, kept as they were.
 LEGACY = {
-    'night':      dict(sharpness=250, brightness=193, contrast=32, saturation=32,
-                       gain=255, exposure=1873, aepri=1, focus=51, zoom_absolute=1),
+    # Night was retuned to match the ONN settings, mapped onto this camera's
+    # 0-255 ranges rather than copied as raw numbers: brightness and gain to
+    # the top, the longest exposure the driver will take, backlight
+    # compensation on, and sharpness cut back. Heavy sharpening amplifies
+    # sensor noise in the dark, which is why the ONN night preset sits at 3 of
+    # 7 rather than near maximum; 109 of 255 is the same proportion. Set
+    # sharpness back to 250 here if you prefer the old look.
+    'night':      dict(sharpness=109, brightness=255, contrast=54, saturation=64,
+                       gain=255, exposure=2047, aepri=1, focus=51,
+                       backlight_compensation=255, zoom_absolute=1),
+    # Colour noise is most of what makes a dark frame look muddy, so this
+    # trades colour for a cleaner, apparently brighter picture.
+    'night_mono': dict(sharpness=72, brightness=255, contrast=67, saturation=0,
+                       gain=255, exposure=2047, aepri=1, focus=51,
+                       backlight_compensation=255, zoom_absolute=1),
     'golden_am':  dict(sharpness=250, brightness=170, contrast=32, saturation=32,
-                       gain=150, exposure=200, aepri=0, focus=0, zoom_absolute=1),
+                       gain=150, exposure=200, aepri=0, focus=0,
+                       zoom_absolute=1),
     'day':        dict(sharpness=250, brightness=153, contrast=32, saturation=32,
                        gain=104, exposure=4, aepri=0, focus=0, zoom_absolute=1),
     'bright_sun': dict(sharpness=250, brightness=153, contrast=32, saturation=32,
                        gain=0, exposure=4, aepri=0, focus=0, zoom_absolute=1),
     'golden_pm':  dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=104, exposure=50, aepri=0, focus=0, zoom_absolute=1),
+                       gain=104, exposure=50, aepri=0, focus=0,
+                       zoom_absolute=1),
 }
 
 # modern: the numbers tuned for the ONN webcam.
@@ -49,18 +81,21 @@ MODERN = {
     'night':      dict(sharpness=3, brightness=64, contrast=20, saturation=30,
                        gain=100, exposure=5000, aepri=0, focus=51,
                        backlight_compensation=12, zoom_absolute=0),
+    'night_mono': dict(sharpness=2, brightness=64, contrast=25, saturation=0,
+                       gain=100, exposure=5000, aepri=0, focus=51,
+                       backlight_compensation=12, zoom_absolute=0),
     'golden_am':  dict(sharpness=5, brightness=8, contrast=28, saturation=70,
                        gain=45, exposure=350, aepri=0, focus=50,
-                       backlight_compensation=10, wb_temp=3400, zoom_absolute=0),
+                       backlight_compensation=10, zoom_absolute=0),
     'day':        dict(sharpness=5, brightness=0, contrast=32, saturation=64,
                        gain=20, exposure=80, aepri=0, focus=50,
                        backlight_compensation=4, zoom_absolute=0),
     'bright_sun': dict(sharpness=7, brightness=-30, contrast=40, saturation=50,
                        gain=0, exposure=2, aepri=0, focus=50,
-                       backlight_compensation=0, wb_temp=5500, zoom_absolute=0),
+                       backlight_compensation=0, zoom_absolute=0),
     'golden_pm':  dict(sharpness=5, brightness=8, contrast=28, saturation=70,
                        gain=35, exposure=250, aepri=0, focus=50,
-                       backlight_compensation=10, wb_temp=3000, zoom_absolute=0),
+                       backlight_compensation=10, zoom_absolute=0),
 }
 
 CTRL_LINE = re.compile(
@@ -179,15 +214,17 @@ def apply_preset(preset, device='/dev/video0'):
     cam.set_ctrl('focus_absolute', vals.get('focus'))
     cam.set_ctrl('zoom_absolute', vals.get('zoom_absolute'))
 
-    # White balance: manual and warm during golden hour, automatic otherwise.
-    if 'wb_temp' in vals:
+    # Cold white balance on every preset. Automatic is only left on when this
+    # camera has no temperature control, because otherwise it would sit in
+    # manual at whatever value happened to be set.
+    if 'white_balance_temperature' in cam.controls:
         cam.set_ctrl(cam.wb_auto, 0)
-        cam.set_ctrl('white_balance_temperature', vals['wb_temp'])
+        cam.set_ctrl('white_balance_temperature', COLD_WB)
     else:
         cam.set_ctrl(cam.wb_auto, 1)
 
     # Exposure last, once the frame settings are in place.
-    if preset == 'night':
+    if preset in ('night', 'night_mono'):
         cam.set_long_exposure(vals['exposure'])
     else:
         cam.set_ctrl(cam.exp_ctrl, vals['exposure'])
@@ -196,7 +233,7 @@ def apply_preset(preset, device='/dev/video0'):
 
 def main():
     if len(sys.argv) < 2:
-        print('usage: webcam_presets.py night|golden-am|day|bright-sun|golden-pm '
+        print('usage: webcam_presets.py night|night-mono|golden-am|day|bright-sun|golden-pm '
               '[/dev/videoN]', file=sys.stderr)
         return 2
     device = (sys.argv[2] if len(sys.argv) > 2
@@ -205,10 +242,4 @@ def main():
 
 
 if __name__ == '__main__':
-    # Do not traceback when the output is piped into something like `head`.
-    try:
-        import signal
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    except (ImportError, AttributeError, ValueError):
-        pass
     sys.exit(main())

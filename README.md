@@ -43,6 +43,7 @@ Controls a camera does not have are skipped.
 Run a preset directly:
 
     python3 webcam_presets.py night
+    python3 webcam_presets.py night-mono
     python3 webcam_presets.py golden-am
     python3 webcam_presets.py day
     python3 webcam_presets.py bright-sun
@@ -62,3 +63,22 @@ golden evening, then night.
 
 These values match the Perl version in Perl-Outdoor-Webcam-Light-Adjuster
 exactly.
+
+## Night tuning and white balance
+
+Night was retuned to match the ONN settings, mapped onto this camera's 0-255
+ranges rather than copied as raw numbers: brightness and gain to the top, the
+longest exposure the driver will take, backlight compensation on, and sharpness
+cut back from 250 to 109. Heavy sharpening amplifies sensor noise in the dark,
+which is why the ONN night preset sits at 3 of 7 rather than near maximum.
+Set sharpness back to 250 in the night table if you prefer the old look.
+
+`night-mono-sharp-webcam.py` is the same thing without colour. Colour noise is
+most of what makes a dark frame look muddy, so dropping saturation to 0 trades
+colour for a cleaner, apparently brighter picture.
+
+Every preset uses a cold white balance (manual 2800). Note that
+`white_balance_temperature` sets the colour temperature the camera ASSUMES the
+light to be, not the look of the picture: a low value tells the camera the light
+is warm, so it compensates with blue and the result looks cold. Change `COLD_WB`
+at the top of `webcam_presets.py` to adjust it.
