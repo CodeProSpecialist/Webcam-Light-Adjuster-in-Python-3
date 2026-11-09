@@ -4,12 +4,33 @@ import time
 from astral.sun import sun
 from astral.location import LocationInfo
 
+# Daily time refresh at 04:46, the same minute as the other two webcam programs.
+REFRESH_MINUTE = 4 * 60 + 46
+
+# Sunrise and sunset for the day, refreshed at REFRESH_MINUTE.
+SUN_CACHE = {'date': None, 'times': None}
+
 # Infinite loop to continuously check the calculated times
 while True:
     current_time = datetime.datetime.now().replace(second=0, microsecond=0)
 
-    # Method to calculate sunrise and sunset times using Astral library
+    # Method to calculate sunrise and sunset times using Astral library.
+    #
+    # The times are worked out once and then reused until the 04:46 refresh, the
+    # same minute the other two webcam programs refresh at. 04:46 is before the
+    # earliest sunrise of the year, so the new times are always in place before
+    # the morning's first light change. Holding them steady through the day also
+    # keeps the astral calculation from running on every pass of the loop.
     def get_sunrise_sunset():
+        now = datetime.datetime.now()
+        today = now.date()
+        cached = SUN_CACHE.get('date')
+        due = (cached is None
+               or (cached != today
+                   and now.hour * 60 + now.minute >= REFRESH_MINUTE))
+        if not due:
+            return SUN_CACHE['times']
+
         # Create a location object with latitude, longitude, and timezone values
          # latitude + , longitude -
         location = LocationInfo(
@@ -18,11 +39,15 @@ while True:
         )          
 
         # Calculate sunrise and sunset times for today
-        s = sun(location.observer, date=datetime.date.today(), tzinfo=location.timezone)
+        s = sun(location.observer, date=today, tzinfo=location.timezone)
         sunrise_time = s["sunrise"].replace(second=0, microsecond=0, tzinfo=None)
         sunset_time = s["sunset"].replace(second=0, microsecond=0, tzinfo=None)
 
-        return sunrise_time, sunset_time
+        SUN_CACHE['date'] = today
+        SUN_CACHE['times'] = (sunrise_time, sunset_time)
+        print(f"Refreshed sunrise/sunset at {now:%H:%M}: "
+              f"{sunrise_time:%H:%M} / {sunset_time:%H:%M}")
+        return SUN_CACHE['times']
 
         # Define the classes for each subprocess
 
