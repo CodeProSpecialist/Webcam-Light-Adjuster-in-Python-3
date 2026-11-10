@@ -8,6 +8,21 @@ import time
 import urllib.error
 import urllib.request
 
+# First run: check the modules below are installed, and offer to install the
+# apt packages that provide them if they are not. Nothing is printed when
+# they are all there, and sudo is only invoked when something is actually
+# missing, so an ordinary run never prompts for a password.
+#
+# webcam_bootstrap sits beside this file, so the plain import finds it. If it
+# has been deleted the import fails and the astral import below fails as it
+# always did. Set WEBCAM_NO_BOOTSTRAP=1 to skip the check.
+try:
+    import webcam_bootstrap
+except ImportError:
+    pass
+else:
+    webcam_bootstrap.ensure('astral')
+
 
 # Run one of the preset wrapper scripts.
 #

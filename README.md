@@ -41,6 +41,38 @@ works; one of them has to.
 
 ## Install
 
+The programs check their own modules on the first run. Start one with a module
+missing and it names the module and the apt package that provides it, shows the
+command, and offers to run it:
+
+```
+webcam: these Python modules are needed and not installed:
+  astral
+
+This can install them now with:
+
+    sudo apt-get -y install python3-astral
+
+sudo will ask for your password.
+Install them? [y/N]
+```
+
+Answer anything but yes and it exits having changed nothing. Once they are
+installed it says nothing on any later run, and `sudo` is only ever invoked
+when something is actually missing - an ordinary start never asks for a
+password.
+
+Under cron, systemd or a pipe it does not ask and does not install: there is no
+terminal to answer on, and a prompt there would wait for an answer nobody can
+give while the scheduler silently never started. It prints the command and
+exits instead, so run it by hand once before putting any of this in a crontab.
+
+It installs from apt and not pip, for the reason given below. The
+check lives in `webcam_bootstrap.py`; `WEBCAM_NO_BOOTSTRAP=1` skips it, which
+is what to use when the modules come from a virtual environment.
+
+To install everything yourself first:
+
 ```
 sudo apt-get -y install v4l-utils imagemagick ffmpeg curl python3-astral python3-tk
 ```
@@ -493,6 +525,7 @@ always did.
 | `webcam_time.py` | checks the clock against a time server |
 | `webcam_light_meter.py` | the automatic light adjustment loop |
 | `webcam_presets.py` | the settings engine: reads the camera, applies a preset |
+| `webcam_bootstrap.py` | the first-run check: names missing modules, offers the apt packages |
 | `night-sharp-webcam.py` | wrapper: night |
 | `night-mono-sharp-webcam.py` | wrapper: night without colour |
 | `post-sunrise-sharp-webcam.py` | wrapper: golden morning |
