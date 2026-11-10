@@ -80,6 +80,13 @@ from astral.location import LocationInfo
 # webcam_location.py for the order it is worked out in, and for how to pin it
 # with WEBCAM_LAT and WEBCAM_LON.
 from webcam_location import detect_location, save_location
+import webcam_time
+
+# Every light change below is worked out from the clock, so the clock is
+# checked against a time server now and once a day after that. The system
+# clock is not changed - the difference is carried as an offset here.
+webcam_time.sync()
+print(f'clock: {webcam_time.status()}')
 
 LATITUDE, LONGITUDE, SUN_TZID, LOCATION_HOW = detect_location()
 TIMEZONE = SUN_TZID
@@ -90,7 +97,7 @@ SUN_FILE = os.path.join(os.path.expanduser('~'), '.webcam-sun-times.conf')
 def save_sun_file(sunrise_hhmm, sunset_hhmm, source):
     try:
         with open(SUN_FILE, 'w') as fh:
-            stamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+            stamp = webcam_time.now().strftime('%Y-%m-%d %H:%M')
             fh.write(f'# webcam sunrise/sunset times - written {stamp}\n')
             fh.write(f'sunrise={sunrise_hhmm}\n')
             fh.write(f'sunset={sunset_hhmm}\n')
@@ -151,7 +158,7 @@ def fetch_sun_online():
 
 def hhmm_to_today(hhmm):
     hour, minute = (int(x) for x in hhmm.split(':'))
-    return datetime.datetime.now().replace(
+    return webcam_time.now().replace(
         hour=hour, minute=minute, second=0, microsecond=0)
 
 # Daily time refresh at 04:46, the same minute as the other two webcam programs.
@@ -162,7 +169,7 @@ SUN_CACHE = {'date': None, 'times': None}
 
 # Infinite loop to continuously check the calculated times
 while True:
-    current_time = datetime.datetime.now().replace(second=0, microsecond=0)
+    current_time = webcam_time.now().replace(second=0, microsecond=0)
 
     # Method to calculate sunrise and sunset times using Astral library.
     #
@@ -172,7 +179,7 @@ while True:
     # the morning's first light change. Holding them steady through the day also
     # keeps the astral calculation from running on every pass of the loop.
     def get_sunrise_sunset():
-        now = datetime.datetime.now()
+        now = webcam_time.now()
         today = now.date()
         cached = SUN_CACHE.get('date')
         due = (cached is None
@@ -345,6 +352,9 @@ while True:
     # every 5 seconds on the way through, instead of the scheduler sitting
     # blind for the whole 20. Without the meter it is the plain sleep it
     # always was.
+    # Once a day; offline it does nothing and the system clock is used.
+    webcam_time.check_due(log=webcam_light_meter.log)
+
     if light_meter is not None:
         light_meter.sleep_with_metering(20)
     else:
