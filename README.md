@@ -100,3 +100,66 @@ the legacy Perl repo (Perl-Outdoor-Webcam-Light-Adjuster):
 
 Night is applied twice because a camera does not always take the settings on
 the first attempt. Edit the minute offsets in `python3-sunrise-sunset.py`.
+
+
+## Automatic light adjustment (new)
+
+The schedule above is still what picks the preset. On top of it, the scheduler
+now measures the picture the camera is actually producing, every 5 seconds, and
+corrects whatever the preset set so the result is neither too bright nor too
+dark. A cloudy afternoon, a security light coming on at 2am, snow glare at
+noon - none of that is on a clock, so none of it can be handled by one.
+
+It is a correction and not a replacement. Every preset stays exactly as it is,
+including its white balance, focus and exposure mode; the correction moves five
+light controls - gain, brightness, contrast, saturation and backlight
+compensation - away from the preset's own values by a trim of -5 to +5 steps.
+Gain carries most of it, because it is the control that actually amplifies
+signal. Brightness moves least, since on these webcams it is a black level lift
+rather than exposure. Saturation comes *down* as the trim goes up, so there is
+colour day and night, with less of it at night where most of the colour left is
+noise. Each step is a fraction of the control's own range, read from
+`v4l2-ctl -L`, so the same code suits cameras with different ranges.
+
+When a preset fires, or you move a control by hand, the loop notices that the
+settings are not what it last wrote and re-learns them as its new baseline,
+with the trim back at zero. Nothing has to tell it a preset ran.
+
+### What it measures
+
+Average grey level, plus two clipping figures: how much of the frame has gone
+to pure white and how much to pure black. The mean cannot see either problem on
+its own - a frame that is half blown-out floodlight and half pitch black
+averages to a respectable middle grey while showing nothing at all. Either
+clipping figure can override the mean. When both are out at once, which is what
+a security light over black tarmac looks like, it holds where it is and says
+so, rather than chasing a picture the sensor cannot hold.
+
+It takes the median of three samples, needs two consecutive samples to agree
+before it moves, and waits two samples after each change, so passing headlights
+do not drag the picture dark for the next minute.
+
+### Setting it up
+
+The camera cannot be opened for this: V4L2 allows only one program to stream,
+and the recording software holds the device. So the still comes from that
+software instead. Set `WEBCAM_SNAPSHOT` to one of:
+
+* a directory - the newest `.jpg` in it is measured, which is what a "save
+  snapshots to folder" module produces
+* a single file - for software that overwrites the same still each time
+* an `http://` URL - a snapshot URL from the recording software's web server
+
+```
+sudo apt install imagemagick
+export WEBCAM_SNAPSHOT=$HOME/webcam-snapshots
+export WEBCAM_TARGET=100        # target grey level out of 255, optional
+```
+
+With no snapshot set, nothing is corrected and the presets stand as they always
+did. ImageMagick does the measuring; without it the correction stays idle and
+the schedule keeps working.
+
+The loop itself lives in `webcam_light_meter.py`, which is imported
+defensively: if it or ImageMagick is missing, the scheduler starts and runs the
+clock-driven presets exactly as before.

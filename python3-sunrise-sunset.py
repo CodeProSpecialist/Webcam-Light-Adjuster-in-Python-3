@@ -35,6 +35,27 @@ def run_preset(script):
     print(f'{script} not found next to {__file__}, in $HOME, or in {os.getcwd()}',
           file=sys.stderr)
     return False
+
+# ---- Automatic light adjustment ----
+#
+# Corrects whichever preset is in force by measuring the picture itself every
+# 5 seconds, so the camera is neither too bright nor too dark whatever the
+# light is actually doing. It does not replace anything below: the schedule
+# still picks the preset, and this trims what the preset set. See
+# webcam_light_meter.py for how it works and for the snapshot setting it
+# needs.
+#
+# Imported defensively. If the module or ImageMagick is missing, the scheduler
+# carries on exactly as it did before rather than refusing to start - the
+# clock-driven presets are the part that must never fail.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from webcam_light_meter import LightMeter
+    light_meter = LightMeter(device=os.environ.get('WEBCAM_DEVICE', '/dev/video0'))
+except Exception as problem:                                  # noqa: BLE001
+    print(f'automatic light adjustment unavailable: {problem}', file=sys.stderr)
+    light_meter = None
+
 from astral.sun import sun
 from astral.location import LocationInfo
 
@@ -305,4 +326,12 @@ while True:
 
     # Delay between target_time checks (adjust as needed)
     # time.sleep(30) for 30 seconds to check twice per minute
-    time.sleep(20)
+    #
+    # The wait is handed to the light meter so it can measure the picture
+    # every 5 seconds on the way through, instead of the scheduler sitting
+    # blind for the whole 20. Without the meter it is the plain sleep it
+    # always was.
+    if light_meter is not None:
+        light_meter.sleep_with_metering(20)
+    else:
+        time.sleep(20)

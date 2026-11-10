@@ -1,0 +1,346 @@
+"""Automatic light adjustment: a closed loop on the picture the camera is
+actually producing.
+
+This runs alongside the sunrise and sunset schedule rather than replacing it.
+The presets - night, day, post-sunrise, pre-sunset, bright sun, mono - stay
+exactly as they are, and the clock still decides which one is in force. What
+this adds is a correction on top of whichever one is active, so the picture is
+neither too bright nor too dark whatever the light outside is actually doing:
+a cloudy afternoon, a security light coming on at 2am, snow glare at noon.
+
+It is a correction and not a replacement because a preset is more than light.
+The golden hour presets have their warm automatic white balance, bright sun has
+its cold white balance and tight focus. Anything that imposed its own absolute
+numbers would flatten all of that into one look. So this measures the picture,
+decides "a bit brighter than this" or "a bit darker than this", and moves five
+light controls away from whatever the preset set them to, by a trim of -5 to +5
+steps. The preset's character survives; only its exposure gets corrected.
+
+It re-learns its baseline on its own. Every pass it reads the five controls
+back off the camera, and if they are not what it last wrote then a preset fired
+or a hand moved a slider, so that becomes the new baseline and the trim returns
+to zero. Nothing has to tell it a preset ran.
+
+The picture has to come from the external camera software, because a V4L2
+camera lets only one program stream from it and that software holds the device.
+Measuring a still it has already written is not the same as opening the camera.
+Set WEBCAM_SNAPSHOT in the environment, or pass snapshot= to LightMeter, to:
+
+  * a directory - the newest .jpg in it is measured, which is what a "save
+    snapshots to folder" module in the camera software produces
+  * a single file - for software that overwrites the same still each time
+  * an http:// URL - a snapshot URL from the camera software's web server
+
+With none of those set, nothing is corrected and the presets stand as they
+are, which is how the scheduler behaved before this existed.
+
+Needs ImageMagick for the measuring:  sudo apt install imagemagick
+"""
+
+import glob
+import os
+import re
+import subprocess
+import time
+
+# Measure every 5 seconds, then wait two samples after a correction.
+#
+# Each change takes a moment to reach the next still the camera software
+# writes, and a loop that acts faster than its own feedback arrives will
+# oscillate - the picture breathes in and out all night instead of settling.
+# Ten seconds of patience is what buys the settling.
+METER_EVERY = 5
+METER_SETTLE = 2
+
+# What a good picture looks like, as numbers.
+#
+# MEAN_TARGET is the average grey level wanted out of 255. 100 is a little
+# under middle grey, which suits a dark scene with a few bright lights in it
+# far better than a true middle grey does: aim at 128 and the security light
+# blows out before the car under it is visible.
+#
+# The two clipping limits are the "not too much white light and not too much
+# darkness" check. The mean cannot see either problem on its own - a frame that
+# is half blown-out floodlight and half pitch black averages to a perfectly
+# respectable middle grey while showing nothing at all. So the fraction of the
+# frame gone to pure white and the fraction gone to pure black are measured
+# separately, and either one can override the mean.
+MEAN_TARGET = int(os.environ.get('WEBCAM_TARGET', 100))
+MEAN_TOL = 14          # dead band, so it is not forever nudging
+MAX_HOT = 0.020        # at most 2% of the frame blown to white
+MAX_COLD = 0.300       # at most 30% of the frame crushed to black
+
+# The five controls this loop may touch, and how far each moves per step of
+# trim, as a fraction of that control's own range.
+#
+# A fraction rather than a fixed number because these scripts drive more than
+# one camera: brightness is -64 to 64 on one and 0 to 255 on another, so the
+# same raw number would be a nudge on one and a lurch on the other. The real
+# range comes from v4l2-ctl -L at startup.
+#
+# Gain carries most of the correction, because it is the control that actually
+# amplifies signal. Brightness moves least: on these webcams it is a black
+# level lift rather than exposure, so it buys apparent brightness at the cost
+# of the black end, which is the mistake the old maximum-brightness night
+# preset made. Contrast rises with the trim to keep the range spread out once
+# gain has lifted everything. Saturation comes DOWN as the trim goes up, which
+# is the "a little bit less colour at night" part - colour is never switched
+# off at any trim, there is just less of it when the gain is high and most of
+# what is left is noise.
+TRIM_RULE = {
+    'gain': 0.120,
+    'brightness': 0.025,
+    'contrast': 0.030,
+    'saturation': -0.025,
+    'backlight_compensation': 0.200,
+}
+
+TRIM_MAX = 5           # steps either side of whatever the preset set
+
+_RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\(\w+\)')
+_VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
+
+# Directories worth looking in when nothing is configured.
+SNAPSHOT_GUESSES = (
+    os.path.expanduser('~/webcam-snapshots'),
+    os.path.expanduser('~/.xeoma/snapshots'),
+    '/opt/Xeoma/snapshots',
+    '/tmp/webcam-snapshots',
+)
+
+
+def _run(args):
+    """v4l2-ctl and ImageMagick, with their noise swallowed and failures
+    turned into an empty string rather than an exception. Nothing here is
+    worth taking the scheduler down for."""
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        return out.stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+class LightMeter:
+    def __init__(self, device='/dev/video0', snapshot=None, target=MEAN_TARGET):
+        self.device = device or os.environ.get('WEBCAM_DEVICE', '/dev/video0')
+        self.snapshot = snapshot if snapshot is not None else os.environ.get('WEBCAM_SNAPSHOT', '')
+        self.target = target
+        self.ranges = {}        # control -> (min, max), read from the camera
+        self.base = {}          # the preset's own values, re-learnt automatically
+        self.wrote = {}         # what this loop last sent, to spot outside changes
+        self.trim = 0
+        self.hold = 0
+        self.means = []
+        self.last_dir = 0
+        self.last_pass = 0.0
+        self.tmp = '/tmp/.webcam-meter.jpg'
+
+    # ---- the camera ----
+
+    def learn_ranges(self):
+        """Ask the camera for the real range of each control this loop uses.
+        Controls the camera does not have are left out, and never touched."""
+        self.ranges = {}
+        for line in _run(['v4l2-ctl', '-d', self.device, '-L']).splitlines():
+            found = _RANGE_RE.match(line)
+            if not found or found.group(1) not in TRIM_RULE:
+                continue
+            low = re.search(r'min=(-?\d+)', line)
+            high = re.search(r'max=(-?\d+)', line)
+            if low and high and int(high.group(1)) > int(low.group(1)):
+                self.ranges[found.group(1)] = (int(low.group(1)), int(high.group(1)))
+        return len(self.ranges)
+
+    def read_controls(self):
+        """Read the controls back in one call. v4l2-ctl takes a comma
+        separated list, which is one process instead of five every five
+        seconds."""
+        names = sorted(self.ranges)
+        if not names:
+            return {}
+        out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl', ','.join(names)])
+        return {k: int(v) for k, v in _VALUE_RE.findall(out) if k in self.ranges}
+
+    def apply_trim(self, trim):
+        """Send the given trim, worked out from the preset's own baseline."""
+        self.trim = max(-TRIM_MAX, min(TRIM_MAX, trim))
+        self.wrote = {}
+        for ctrl, fraction in TRIM_RULE.items():
+            if ctrl not in self.base or ctrl not in self.ranges:
+                continue
+            low, high = self.ranges[ctrl]
+            per = int(round(fraction * (high - low)))
+            if per == 0:                      # never a no-op step
+                per = 1 if fraction > 0 else -1
+            value = max(low, min(high, self.base[ctrl] + per * self.trim))
+            _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}={value}'])
+            self.wrote[ctrl] = value
+
+    # ---- the picture ----
+
+    def find_snapshot(self):
+        """Find a still to measure. Returns a path, or None if there is
+        nothing usable."""
+        source = self.snapshot
+        if not source:
+            source = next((d for d in SNAPSHOT_GUESSES if os.path.isdir(d)), '')
+        if not source:
+            return None
+
+        if source.startswith('http://') or source.startswith('https://'):
+            _run(['curl', '-s', '-m', '4', '-o', self.tmp, source])
+            return self.tmp if os.path.isfile(self.tmp) and os.path.getsize(self.tmp) else None
+
+        if os.path.isdir(source):
+            files = glob.glob(os.path.join(source, '*.jpg')) + \
+                    glob.glob(os.path.join(source, '*.jpeg'))
+            if not files:
+                return None
+            newest = max(files, key=os.path.getmtime)
+            # A still from last week says nothing about the light right now.
+            if time.time() - os.path.getmtime(newest) > 600:
+                return None
+            return newest
+
+        return source if os.path.isfile(source) else None
+
+    def measure(self, path):
+        """Average grey level out of 255, and how much of the frame has gone
+        to pure white and to pure black.
+
+        The mean is taken on a quarter size copy, which is both faster and
+        steadier - averaging is exactly what shrinking an image does. The
+        clipping figures are taken at full size, where a count of individual
+        blown pixels still means something."""
+        if not path:
+            return None
+        mean = _run(['convert', path, '-colorspace', 'Gray', '-resize', '25%',
+                     '-format', '%[fx:mean*255]', 'info:'])
+        found = re.search(r'[\d.]+', mean)
+        if not found:
+            return None
+        hot = _run(['convert', path, '-colorspace', 'Gray', '-threshold', '97%',
+                    '-format', '%[fx:mean]', 'info:'])
+        warm = _run(['convert', path, '-colorspace', 'Gray', '-threshold', '3%',
+                     '-format', '%[fx:mean]', 'info:'])
+        hot_found = re.search(r'[\d.]+', hot)
+        warm_found = re.search(r'[\d.]+', warm)
+        hot_fraction = float(hot_found.group()) if hot_found else 0.0
+        # -threshold keeps what is ABOVE the level, so the black fraction is
+        # what is left once the pixels above 3% are taken out.
+        cold_fraction = 1 - (float(warm_found.group()) if warm_found else 1.0)
+        return float(found.group()), hot_fraction, cold_fraction
+
+    # ---- the loop ----
+
+    def pass_once(self):
+        """One pass. Call it as often as you like; it does its work every
+        METER_EVERY seconds and returns None the rest of the time. Returns a
+        status line when it has something to say."""
+        now = time.time()
+        if now - self.last_pass < METER_EVERY:
+            return None
+        self.last_pass = now
+
+        if not self.ranges and not self.learn_ranges():
+            return 'light meter: camera has none of the controls it adjusts'
+
+        # Re-learn the baseline if anything other than this loop moved the
+        # controls - a preset firing, or a hand on a slider. This is how the
+        # correction stays a correction to whatever is in force rather than
+        # drifting off on its own.
+        #
+        # Two units of slack, because a driver may round a control to its own
+        # step size. Without the slack, a value that comes back as 99 after 100
+        # was sent would look like an outside change, the baseline would be
+        # re-learnt with the trim already inside it, and the next correction
+        # would trim again from there: a ratchet that walks the picture off in
+        # one direction a step at a time.
+        have = self.read_controls()
+        if have:
+            outside = any(ctrl not in self.wrote or abs(self.wrote[ctrl] - value) > 2
+                          for ctrl, value in have.items())
+            if outside:
+                self.base = dict(have)
+                self.wrote = dict(have)
+                self.trim = 0
+                self.last_dir = 0
+                self.means = []
+                self.hold = 1      # let the new preset show up before correcting
+                return 'light meter: learnt the current preset as the baseline'
+            # Rounding, not an outside change: keep the baseline and the trim,
+            # and accept what the driver actually holds as what was written.
+            self.wrote.update(have)
+
+        if self.hold > 0:
+            self.hold -= 1
+            return f'light meter: trim {self.trim:+d}, waiting for the picture to catch up'
+
+        frame = self.find_snapshot()
+        measured = self.measure(frame)
+        if measured is None:
+            return 'light meter: no snapshot to measure, the preset stands as it is'
+        mean, hot, cold = measured
+
+        # Median of the last three keeps a passing pair of headlights from
+        # dragging the picture darker for the next minute.
+        self.means.append(mean)
+        self.means = self.means[-3:]
+        middle = sorted(self.means)[len(self.means) // 2]
+
+        # Which way to go. The clipping checks come first: they are the too
+        # much white light and too much darkness tests, and either can override
+        # a mean that looks perfectly reasonable on its own.
+        direction = 0
+        why = 'picture is where it should be'
+        if hot > MAX_HOT and middle > self.target - MEAN_TOL:
+            direction, why = -1, f'{hot * 100:.1f}% of the frame blown to white'
+        elif cold > MAX_COLD and middle < self.target + MEAN_TOL:
+            direction, why = 1, f'{cold * 100:.0f}% of the frame crushed to black'
+        elif middle > self.target + MEAN_TOL:
+            direction, why = -1, 'too bright'
+        elif middle < self.target - MEAN_TOL:
+            direction, why = 1, 'too dark'
+
+        # A security light over black tarmac holds more range than the sensor
+        # can take, and then both checks fail at once: brightening blows the
+        # light further, darkening loses the car. Rather than run off to one end
+        # of the trim chasing an impossible picture, it stops and says so.
+        if direction > 0 and hot > MAX_HOT * 3:
+            direction = 0
+            why = 'high contrast scene - cannot lift the dark without blowing the light'
+        elif direction < 0 and cold > MAX_COLD * 2:
+            direction = 0
+            why = 'high contrast scene - cannot tame the light without losing the dark'
+
+        # Two samples in a row have to agree before anything moves.
+        if direction != 0 and direction == self.last_dir:
+            at_limit = (direction > 0 and self.trim >= TRIM_MAX) or \
+                       (direction < 0 and self.trim <= -TRIM_MAX)
+            if at_limit:
+                why += ' - trim at its limit, the preset itself needs changing'
+            else:
+                self.apply_trim(self.trim + direction)
+                self.hold = METER_SETTLE
+                self.means = []
+                why += f' - trimmed to {self.trim:+d}'
+        self.last_dir = direction
+
+        return (f'light meter: trim {self.trim:+d}, mean {middle:.0f} of target '
+                f'{self.target}, white {hot * 100:.1f}%, black {cold * 100:.0f}% - {why}')
+
+    def sleep_with_metering(self, seconds, report=print):
+        """Sleep, metering the picture every METER_EVERY seconds along the way.
+
+        The scheduler's own loop sleeps in one long stretch, which is fine for
+        watching a clock and useless for watching the light. This hands the
+        same wait back as a series of short ones with a measurement in each."""
+        deadline = time.time() + seconds
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(METER_EVERY, remaining))
+            line = self.pass_once()
+            if line and report:
+                report(line)
