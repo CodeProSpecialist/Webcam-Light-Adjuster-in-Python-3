@@ -33,11 +33,12 @@ from tkinter import ttk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from webcam_light_meter import LightMeter, METER_SETTLE
+    from webcam_light_meter import LightMeter, METER_SETTLE, LOG_FILE
 except ImportError as problem:                                    # noqa: BLE001
     print(f'automatic light adjustment unavailable: {problem}', file=sys.stderr)
     LightMeter = None
     METER_SETTLE = 2
+    LOG_FILE = ''
 
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
 
@@ -372,6 +373,11 @@ class Window:
                                      anchor='w', justify='left', font=('Helvetica', 8),
                                      wraplength=310)
         self.meter_detail.pack(fill='x', padx=6)
+
+        # Where to read back what went wrong hours ago, since the lines above
+        # only ever show the latest thing.
+        tk.Label(self.right, text=f'Error log: {LOG_FILE}', anchor='w', justify='left',
+                 font=('Helvetica', 8), wraplength=310, fg='#555555').pack(fill='x', padx=6)
 
     def on_meter_toggle(self):
         # Clearing what the loop thinks it last wrote makes the next pass learn

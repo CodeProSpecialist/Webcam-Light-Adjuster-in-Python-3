@@ -178,6 +178,55 @@ SNAPSHOT_GUESSES = (
 )
 
 
+# ---- the error log ----
+#
+# Everything that goes wrong is written here with a timestamp, so a failure at
+# three in the morning can be read back in the morning. A status line only ever
+# shows the latest thing; this keeps the history.
+#
+# What gets logged: the startup probe, every snapshot failure with ffmpeg's own
+# words, every trim the meter applies, every time it re-learns a preset, and
+# anything that stops it working. What does not: the routine pass where the
+# picture is already where it should be, which would be twelve lines a minute
+# and would bury everything worth reading.
+#
+# Repeats are collapsed. A busy camera says so every five seconds, and without
+# this the log would be nothing else; an error identical to the last one is
+# written again only after ten minutes.
+LOG_FILE = os.environ.get('WEBCAM_LOG',
+                          os.path.join(os.path.expanduser('~'), '.webcam-light-meter.log'))
+LOG_MAX = 1024 * 1024          # trim the file once it passes a megabyte
+
+
+def log(message, always=False):
+    """Append one timestamped line to the log."""
+    if not message:
+        return False
+    now = time.time()
+    if not always and message == log.last_message and now - log.last_time < 600:
+        return False
+    log.last_message, log.last_time = message, now
+
+    try:
+        # Keep the file from growing without end: past a megabyte, the newest
+        # 500 lines are kept and the rest dropped.
+        if os.path.isfile(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX:
+            with open(LOG_FILE, encoding='utf-8', errors='replace') as handle:
+                lines = handle.readlines()[-500:]
+            with open(LOG_FILE, 'w', encoding='utf-8') as handle:
+                handle.writelines(lines)
+
+        with open(LOG_FILE, 'a', encoding='utf-8') as handle:
+            handle.write(time.strftime('%Y-%m-%d %H:%M:%S  ') + message + '\n')
+    except OSError:
+        return False
+    return True
+
+
+log.last_message = ''
+log.last_time = 0.0
+
+
 def _magick():
     """Which ImageMagick is installed.
 
@@ -284,6 +333,7 @@ class LightMeter:
                 continue
             self.ranges[name] = fallback[name]
             self.sources[name] = 'fallback'
+        log(self.range_report(), always=True)
         return len(self.ranges)
 
     def range_report(self):
@@ -441,6 +491,7 @@ class LightMeter:
             self.capture_checked = True
             if shutil.which('ffmpeg') is None:
                 self.capture_note = 'ffmpeg is not installed, so no snapshots can be taken here'
+                log(self.capture_note)
                 return None
         # The note is cleared each attempt, so a camera that was busy a minute
         # ago is tried again rather than written off for the rest of the
@@ -490,8 +541,13 @@ class LightMeter:
                 self.capture_note = f'ffmpeg could not take a snapshot: {why}'
             else:
                 self.capture_note = f'ffmpeg could not take a snapshot from {self.device}'
+            log(f'snapshot failed: {self.capture_note}' + (f' [ffmpeg: {why}]' if why else ''))
             return None
-        self.prune_snapshots()
+        gone = self.prune_snapshots()
+        if gone:
+            log(f'deleted {gone} snapshots over the {SNAP_KEEP} kept')
+        if self.capture_note:
+            log(f'snapshots are being taken again: {name}')
         self.capture_note = ''
         return name
 
@@ -504,10 +560,13 @@ class LightMeter:
         try:
             os.makedirs(folder, exist_ok=True)
         except OSError:
+            log(f'cannot create the snapshot folder {folder}')
             return f'light meter: cannot create {folder}'
         gone = self.prune_snapshots()
-        return (f'light meter: snapshots in {folder}, keeping the newest {SNAP_KEEP}'
+        line = (f'light meter: snapshots in {folder}, keeping the newest {SNAP_KEEP}'
                 + (f' (deleted {gone} older)' if gone else ''))
+        log(line, always=True)
+        return line
 
     def find_snapshot(self):
         """Find a still to measure. Returns a path, or None if there is
@@ -608,6 +667,8 @@ class LightMeter:
                 sharp = self.set_sharpness(have.get('gain'))
                 # A preset just changed the light, so refocus for it as well.
                 self.refocus()
+                log('learnt new baseline: '
+                    + ' '.join(f'{k}={v}' for k, v in sorted(have.items())), always=True)
                 return ('light meter: learnt the current preset as the baseline'
                         + (f', sharpness set to {sharp}' if sharp is not None else ''))
             # Rounding, not an outside change: keep the baseline and the trim,
@@ -626,6 +687,7 @@ class LightMeter:
         measured = self.measure(frame)
         if measured is None:
             if not _magick():
+                log('ImageMagick is not installed, so the picture cannot be measured')
                 return 'light meter: ImageMagick is not installed, so the picture cannot be measured'
             return ('light meter: no snapshot to measure, the preset stands as it is'
                     + (f' - {self.capture_note}' if self.capture_note else ''))
@@ -673,6 +735,8 @@ class LightMeter:
                 self.hold = METER_SETTLE
                 self.means = []
                 why += f' - trimmed to {self.trim:+d}'
+                log(f'trim {self.trim:+d}: mean {middle:.0f} of target {self.target}, '
+                    f'white {hot * 100:.1f}%, black {cold * 100:.0f}% ({why})', always=True)
         self.last_dir = direction
 
         return (f'light meter: trim {self.trim:+d}, mean {middle:.0f} of target '

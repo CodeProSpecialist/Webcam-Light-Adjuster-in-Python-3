@@ -267,6 +267,29 @@ A busy camera is retried on every pass rather than written off for the session,
 so if the recording software lets go of the device the snapshots start on their
 own.
 
+### The error log
+
+Everything that goes wrong is written to `~/.webcam-light-meter.log` with a
+timestamp, so a failure at three in the morning can be read back in the
+morning - the status lines only ever show the latest thing. Set `WEBCAM_LOG`
+to put it somewhere else.
+
+```
+tail -f ~/.webcam-light-meter.log
+```
+
+Logged: the startup probe and what it found, the snapshot folder, every
+snapshot failure with ffmpeg's own words, every trim applied and what the
+measurement was, every time a preset is re-learnt as the baseline, and anything
+that stops the loop working. Not logged: the routine pass where the picture is
+already where it should be, which would be twelve lines a minute and would bury
+everything worth reading.
+
+Repeats are collapsed - a busy camera says so every five seconds, and an error
+identical to the last one is written again only after ten minutes. The file is
+trimmed to its newest 500 lines once it passes a megabyte, so it cannot grow
+without end.
+
 ### Focus
 
 Continuous autofocus is on at all times, and nothing in these programs ever
