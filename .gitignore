@@ -1,0 +1,5 @@
+# Compiled bytecode. Python regenerates it on every run, and a .pyc committed
+# here is bytecode for whichever Python version happened to write it - stale
+# against any other.
+__pycache__/
+*.pyc
