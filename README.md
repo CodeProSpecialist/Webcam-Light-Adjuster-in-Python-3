@@ -26,7 +26,7 @@ different control families, so it suits an older webcam and a current one.
 ## Install
 
 ```
-sudo apt-get -y install v4l-utils imagemagick ffmpeg curl python3-astral
+sudo apt-get -y install v4l-utils imagemagick ffmpeg curl python3-astral python3-tk
 ```
 
 Keep all of the project files in the same folder.
@@ -65,6 +65,36 @@ same interpreter this scheduler is running under, rather than whatever
 `python3` happens to mean, and its exit status is checked - a preset that
 failed used to look exactly like one that worked, which mattered most for the
 one preset nobody is awake to notice.
+
+## The control window
+
+```
+python3 webcam_GUI.py
+```
+
+A window with the same presets, the same engine and the same automatic light
+adjustment as the scheduler. Both can run at once: neither opens the video
+stream, they only set controls, and each re-reads the other's work rather than
+fighting over it - press a preset here and the light meter notices within five
+seconds and re-learns it as its baseline.
+
+It builds itself from the camera. Every control on the window comes from
+`v4l2-ctl -L` at startup, with the range the camera reported, which is the only
+way one window serves both the older webcam on 0-255 ranges and the current
+ones where brightness runs -64 to 64. Integer and menu controls get a slider
+over the camera's own range, booleans get a checkbox, and a control the camera
+has that this program has never heard of still appears rather than being
+quietly dropped. Nothing is sent that the camera did not confirm it has.
+
+The window scrolls - a camera with every control the kernel defines makes a
+taller column than most screens have room for - with a scrollbar on the right,
+one along the bottom, the wheel, Page Up and Page Down, Home and End.
+
+There is no preview, deliberately: a V4L2 camera lets one program stream at a
+time and the recording software has it. Judge the picture in whatever is
+recording it.
+
+It needs `python3-tk`, which is in the install line above.
 
 ## The schedule
 
@@ -295,6 +325,7 @@ always did.
 | File | What it is |
 |------|------------|
 | `python3-sunrise-sunset.py` | the scheduler |
+| `webcam_GUI.py` | the control window: every camera control, presets, light meter |
 | `webcam_light_meter.py` | the automatic light adjustment loop |
 | `webcam_presets.py` | the settings engine: reads the camera, applies a preset |
 | `night-sharp-webcam.py` | wrapper: night |
