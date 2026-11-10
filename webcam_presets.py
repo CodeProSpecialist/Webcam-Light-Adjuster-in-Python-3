@@ -81,18 +81,22 @@ LEGACY = {
     'night_mono': dict(sharpness=72, brightness=175, contrast=223, saturation=0,
                        gain=255, exposure=2047, aepri=1, focus=51,
                        backlight_compensation=0, zoom_absolute=1),
-    # These four used to leave backlight_compensation out entirely. The apply
-    # loop skips any key that is absent, so it was never sent and kept whatever
-    # the last preset set. Coming off night that is 255, which washes out a
-    # daylight picture badly, and since night runs every evening that was the
-    # value that stuck. The numbers are the modern table's values scaled onto
-    # this camera's 0-255 range, the same way the rest of this table was.
-    'golden_am':  dict(sharpness=250, brightness=170, contrast=32, saturation=32,
-                       gain=150, exposure=200, aepri=0, focus=0,
-                       backlight_compensation=16, zoom_absolute=1),
-    'day':        dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=104, exposure=4, aepri=0, focus=0,
-                       backlight_compensation=6, zoom_absolute=1),
+    # backlight_compensation used to be left out of the daylight rows entirely.
+    # The apply loop skips any key that is absent, so it was never sent and
+    # kept whatever the last preset set. Coming off night that is 255, which
+    # washes out a daylight picture badly, and since night runs every evening
+    # that was the value that stuck. It is always sent now.
+    # Day and Golden AM are the camera's own default light settings, taken from
+    # the Defaults preset in the ONN settings GUI and scaled onto this camera's
+    # 0-255 ranges the same way the night row was: sharpness 3 of 7 -> 109,
+    # brightness mid-range -> 128, contrast 32 of 95 -> 86, saturation 64 of
+    # 120 -> 136. Both rows are deliberately identical.
+    'golden_am':  dict(sharpness=109, brightness=128, contrast=86, saturation=136,
+                       gain=0, exposure=60, aepri=1, focus=50,
+                       backlight_compensation=6, zoom_absolute=0),
+    'day':        dict(sharpness=109, brightness=128, contrast=86, saturation=136,
+                       gain=0, exposure=60, aepri=1, focus=50,
+                       backlight_compensation=6, zoom_absolute=0),
     'bright_sun': dict(sharpness=250, brightness=153, contrast=32, saturation=32,
                        gain=0, exposure=4, aepri=0, focus=0,
                        backlight_compensation=0, zoom_absolute=1),
@@ -118,12 +122,15 @@ MODERN = {
     'night_mono': dict(sharpness=2, brightness=24, contrast=56, saturation=0,
                        gain=100, exposure=5000, aepri=0, focus=51,
                        backlight_compensation=0, zoom_absolute=0),
-    'golden_am':  dict(sharpness=5, brightness=8, contrast=28, saturation=70,
-                       gain=45, exposure=350, aepri=0, focus=50,
-                       backlight_compensation=10, zoom_absolute=0),
-    'day':        dict(sharpness=5, brightness=0, contrast=32, saturation=64,
-                       gain=20, exposure=80, aepri=0, focus=50,
-                       backlight_compensation=4, zoom_absolute=0),
+    # Day and Golden AM are the camera's own default light settings, copied
+    # from the Defaults preset in the ONN settings GUI rather than tuned.
+    # Both rows are deliberately identical.
+    'golden_am':  dict(sharpness=3, brightness=0, contrast=32, saturation=64,
+                       gain=0, exposure=157, aepri=1, focus=50,
+                       backlight_compensation=6, zoom_absolute=0),
+    'day':        dict(sharpness=3, brightness=0, contrast=32, saturation=64,
+                       gain=0, exposure=157, aepri=1, focus=50,
+                       backlight_compensation=6, zoom_absolute=0),
     'bright_sun': dict(sharpness=7, brightness=-30, contrast=40, saturation=50,
                        gain=0, exposure=2, aepri=0, focus=50,
                        backlight_compensation=0, zoom_absolute=0),
