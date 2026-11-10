@@ -442,21 +442,57 @@ class LightMeter:
             if shutil.which('ffmpeg') is None:
                 self.capture_note = 'ffmpeg is not installed, so no snapshots can be taken here'
                 return None
-        if self.capture_note:
+        # The note is cleared each attempt, so a camera that was busy a minute
+        # ago is tried again rather than written off for the rest of the
+        # session. ffmpeg missing is the one thing that will not fix itself.
+        if 'not installed' in self.capture_note:
             return None
+        self.capture_note = ''
 
         name = os.path.join(folder, time.strftime('snapshot-%Y%m%d-%H%M%S.jpg'))
-        _run(['ffmpeg', '-nostdin', '-loglevel', 'quiet', '-f', 'v4l2',
-              '-i', self.device, '-frames:v', '1', '-q:v', '2', '-y', name])
+        # ffmpeg's own error is kept rather than thrown away. It used to be
+        # swallowed and every failure was reported as a busy camera, which is
+        # only one of the things that can go wrong here - the device can be
+        # missing, the user can be outside the video group, the driver can
+        # refuse the pixel format. Guessing at which one wastes an evening;
+        # the actual line says.
+        try:
+            done = subprocess.run(
+                ['ffmpeg', '-nostdin', '-loglevel', 'error', '-f', 'v4l2',
+                 '-i', self.device, '-frames:v', '1', '-q:v', '2', '-y', name],
+                capture_output=True, text=True, timeout=20)
+            problem = done.stderr or ''
+        except (OSError, subprocess.SubprocessError) as oops:      # noqa: BLE001
+            problem = str(oops)
+
         if not os.path.isfile(name) or not os.path.getsize(name):
             if os.path.exists(name):
                 try:
                     os.remove(name)
                 except OSError:
                     pass
-            self.capture_note = 'camera is busy, so stills come from the recording software'
+            # The last line is the one that says what actually failed.
+            why = ''
+            for line in reversed(problem.splitlines()):
+                if line.strip():
+                    why = line.strip()
+                    break
+            low = why.lower()
+            if 'busy' in low:
+                self.capture_note = (f'camera is busy ({self.device} is held by something '
+                                     'else), so stills come from the recording software')
+            elif 'permission' in low or 'denied' in low:
+                self.capture_note = (f'no permission to open {self.device} - add this user '
+                                     'to the video group')
+            elif 'no such file' in low:
+                self.capture_note = f'{self.device} does not exist - is the camera plugged in?'
+            elif why:
+                self.capture_note = f'ffmpeg could not take a snapshot: {why}'
+            else:
+                self.capture_note = f'ffmpeg could not take a snapshot from {self.device}'
             return None
         self.prune_snapshots()
+        self.capture_note = ''
         return name
 
     def prepare_snapshots(self):

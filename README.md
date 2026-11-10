@@ -246,6 +246,27 @@ Sharpening is contrast enhancement at the pixel level and it sharpens noise as
 happily as it sharpens the edge of a number plate, which is the only reason to
 ease off at all.
 
+If no snapshots appear in the folder, the status line now says why rather than
+guessing. The reasons it can give:
+
+| Message | What to do |
+|---------|------------|
+| `camera is busy (/dev/video0 is held by something else)` | The recording software has the camera. Nothing can be grabbed here; point the setting at a folder that software writes stills into, or stop it long enough to test. |
+| `no permission to open /dev/video0` | `sudo usermod -aG video $USER`, then log out and back in. |
+| `/dev/video0 does not exist` | The camera is unplugged, or it is on another node - check `v4l2-ctl --list-devices`. |
+| `ffmpeg is not installed` | `sudo apt install ffmpeg`. |
+| `ffmpeg could not take a snapshot: ...` | ffmpeg's own words for anything else. |
+
+To see the whole error yourself:
+
+```
+ffmpeg -nostdin -f v4l2 -i /dev/video0 -frames:v 1 -y /tmp/test.jpg
+```
+
+A busy camera is retried on every pass rather than written off for the session,
+so if the recording software lets go of the device the snapshots start on their
+own.
+
 ### Focus
 
 Continuous autofocus is on at all times, and nothing in these programs ever
