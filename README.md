@@ -66,6 +66,37 @@ same interpreter this scheduler is running under, rather than whatever
 failed used to look exactly like one that worked, which mattered most for the
 one preset nobody is awake to notice.
 
+### Where it thinks it is
+
+Sunrise and sunset depend on where you are, and there is no place written down
+anywhere in these programs. The location is worked out at startup, first answer
+wins:
+
+1. `WEBCAM_LAT` and `WEBCAM_LON`, for a machine that should not be guessing -
+   a camera on a tower a county away from the computer driving it, say.
+2. The cached answer in `~/.webcam-location.conf`, if it is less than a week
+   old. Nothing goes out to the network on an ordinary run.
+3. An IP lookup, which gives the city the connection comes out of.
+4. The last cached answer whatever its age, since a stale location beats none -
+   sunrise moves by about a minute a day, not an hour.
+
+Worth being plain about the lookup: it tells a third party (ipinfo.io, and
+ip-api.com if that one is not answering) this machine's IP address, and what
+comes back is where the internet connection surfaces, not where the camera is.
+On a VPN it is wrong by however far the VPN reaches. That is why the answer is
+cached, shown, and overridable:
+
+```
+export WEBCAM_LAT=41.2619
+export WEBCAM_LON=-95.8608
+export WEBCAM_TZ=America/Chicago      # optional; the system's zone otherwise
+```
+
+Set those and no lookup is ever made. Accuracy only has to be rough: a tenth of
+a degree of latitude moves sunrise by well under a minute, and these presets
+switch on offsets of 7 to 122 minutes, so a city-level answer is as good as a
+surveyed one.
+
 ## The control window
 
 ```
@@ -370,6 +401,7 @@ always did.
 |------|------------|
 | `python3-sunrise-sunset.py` | the scheduler |
 | `webcam_GUI.py` | the control window: every camera control, presets, light meter |
+| `webcam_location.py` | works out where the camera is, for the sun times |
 | `webcam_light_meter.py` | the automatic light adjustment loop |
 | `webcam_presets.py` | the settings engine: reads the camera, applies a preset |
 | `night-sharp-webcam.py` | wrapper: night |

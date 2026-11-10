@@ -76,10 +76,14 @@ from astral.location import LocationInfo
 #
 # Every successful fetch or calculation is written to the shared file, so the
 # ONN settings GUI and the Perl program can fall back on it as well.
-LATITUDE = 39.0997
-LONGITUDE = -94.5786
-TIMEZONE = 'US/Central'
-SUN_TZID = 'America/Chicago'
+# Worked out at startup - no place is written down in this file. See
+# webcam_location.py for the order it is worked out in, and for how to pin it
+# with WEBCAM_LAT and WEBCAM_LON.
+from webcam_location import detect_location
+
+LATITUDE, LONGITUDE, SUN_TZID, LOCATION_HOW = detect_location()
+TIMEZONE = SUN_TZID
+print(f'location: {LATITUDE}, {LONGITUDE} ({SUN_TZID}) from {LOCATION_HOW}')
 SUN_FILE = os.path.join(os.path.expanduser('~'), '.webcam-sun-times.conf')
 
 
@@ -199,7 +203,7 @@ while True:
 
         # 3. work them out locally, which needs no network
         location = LocationInfo(
-            "Kansas City", "Missouri", TIMEZONE,
+            "camera", "local", TIMEZONE,
             latitude=LATITUDE, longitude=LONGITUDE
         )
         s = sun(location.observer, date=today, tzinfo=location.timezone)
