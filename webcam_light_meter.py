@@ -168,6 +168,23 @@ SNAPSHOT_GUESSES = (
 )
 
 
+def _magick():
+    """Which ImageMagick is installed.
+
+    ImageMagick 7, which is what Ubuntu 26.04 ships, dropped the `convert`
+    command in favour of `magick`; ImageMagick 6, on 24.04 and earlier, has
+    `convert` and no `magick`. The arguments are the same either way, so only
+    the command name has to be worked out. Without this the measuring silently
+    finds nothing on a newer Ubuntu and the meter sits there reporting no
+    snapshot."""
+    if _magick.found is None:
+        _magick.found = shutil.which('magick') or shutil.which('convert') or ''
+    return _magick.found
+
+
+_magick.found = None
+
+
 def _run(args):
     """v4l2-ctl and ImageMagick, with their noise swallowed and failures
     turned into an empty string rather than an exception. Nothing here is
@@ -449,14 +466,17 @@ class LightMeter:
         blown pixels still means something."""
         if not path:
             return None
-        mean = _run(['convert', path, '-colorspace', 'Gray', '-resize', '25%',
+        magick = _magick()
+        if not magick:
+            return None
+        mean = _run([magick, path, '-colorspace', 'Gray', '-resize', '25%',
                      '-format', '%[fx:mean*255]', 'info:'])
         found = re.search(r'[\d.]+', mean)
         if not found:
             return None
-        hot = _run(['convert', path, '-colorspace', 'Gray', '-threshold', '97%',
+        hot = _run([magick, path, '-colorspace', 'Gray', '-threshold', '97%',
                     '-format', '%[fx:mean]', 'info:'])
-        warm = _run(['convert', path, '-colorspace', 'Gray', '-threshold', '3%',
+        warm = _run([magick, path, '-colorspace', 'Gray', '-threshold', '3%',
                      '-format', '%[fx:mean]', 'info:'])
         hot_found = re.search(r'[\d.]+', hot)
         warm_found = re.search(r'[\d.]+', warm)
@@ -524,6 +544,8 @@ class LightMeter:
         frame = self.find_snapshot()
         measured = self.measure(frame)
         if measured is None:
+            if not _magick():
+                return 'light meter: ImageMagick is not installed, so the picture cannot be measured'
             return ('light meter: no snapshot to measure, the preset stands as it is'
                     + (f' - {self.capture_note}' if self.capture_note else ''))
         mean, hot, cold = measured

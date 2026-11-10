@@ -3,7 +3,8 @@
 The Python 3 version of the webcam light adjuster, matching the Perl repository
 (Perl-Outdoor-Webcam-Light-Adjuster) value for value.
 
-Automatically adjusts an outdoor USB webcam's settings in Ubuntu Linux: it
+Automatically adjusts an outdoor USB webcam's settings in Ubuntu Linux, 24.04
+and 26.04: it
 switches between tuned presets on today's real sunrise and sunset times, and
 corrects whichever preset is in force by measuring the picture the camera is
 actually producing. Written for a 1080p HD USB webcam, and it drives two
@@ -25,11 +26,28 @@ different control families, so it suits an older webcam and a current one.
 ## Install
 
 ```
-pip3 install astral
-sudo apt-get -y install v4l-utils python3-pip imagemagick ffmpeg curl
+sudo apt-get -y install v4l-utils imagemagick ffmpeg curl python3-astral
 ```
 
 Keep all of the project files in the same folder.
+
+`astral` is taken from apt rather than pip because Ubuntu 24.04 and 26.04
+refuse `pip3 install` into the system Python - the error is
+`externally-managed-environment`. If apt does not have it, either use a virtual
+environment or pass `--break-system-packages`:
+
+```
+python3 -m venv ~/webcam-venv && ~/webcam-venv/bin/pip install astral
+# or
+pip3 install --break-system-packages astral
+```
+
+`imagemagick` measures the picture for the automatic light adjustment and
+`ffmpeg` takes the snapshots. On Ubuntu 26.04 the `imagemagick` package
+installs ImageMagick 7, whose command is `magick`; 24.04 and earlier install
+version 6, whose command is `convert`. Either is accepted - the command name is
+worked out at startup, because getting this wrong does not produce an error, it
+just measures nothing.
 
 `imagemagick` is what measures the picture for the automatic light adjustment.
 Without it the schedule still runs; only the correction stays idle.
