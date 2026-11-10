@@ -23,6 +23,22 @@ different control families, so it suits an older webcam and a current one.
 -->
 <!-- ![The scheduler running](docs/screenshot-terminal.png) -->
 
+## Start this before the recording software
+
+**Run `python3-sunrise-sunset.py` first, then open Xeoma or whatever else records the camera.**
+
+That order is what makes the snapshots work. A V4L2 camera lets one program
+stream at a time, so the snapshot this program takes to measure the light can
+only be grabbed while the camera is still free. Start it first and it takes one
+every five seconds and corrects the light from them. Start the recorder first
+and the grab is impossible - the status line then names the program holding the
+camera, like `Xeoma (pid 2317) has /dev/video0`, and nothing is sent to the
+device while it is in use.
+
+The order stops mattering if the recording software writes its own stills into
+the snapshot folder, since those are measured just the same. Either arrangement
+works; one of them has to.
+
 ## Install
 
 ```
@@ -57,6 +73,8 @@ Without it the schedule still runs; only the correction stays idle.
 ```
 python3 python3-sunrise-sunset.py
 ```
+
+Start this before the recording software - see above for why.
 
 The scripts resolve each other next to the file being run, then in `$HOME`,
 then in the working directory, so they work both from the repository and copied
