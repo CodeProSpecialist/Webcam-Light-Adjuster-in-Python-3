@@ -150,6 +150,11 @@ FALLBACK_LEGACY = {
     'sharpness': (0, 255),
 }
 
+# The two names continuous autofocus goes by: the current one, and the
+# pre-5.10 kernel name on the older webcam.
+FOCUS_CTRL = 'focus_automatic_continuous'
+FOCUS_CTRL_LEGACY = 'focus_auto'
+
 _RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((?:int|bool|menu|intmenu)\)', re.I)
 _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
 
@@ -205,6 +210,7 @@ class LightMeter:
         self.ranges = {}        # control -> (min, max), read from the camera
         self.sources = {}       # control -> 'camera' or 'fallback', for reporting
         self.camera_kind = 'unknown'
+        self.focus_ctrl = None      # whichever autofocus control this camera has
         self.base = {}          # the preset's own values, re-learnt automatically
         self.wrote = {}         # what this loop last sent, to spot outside changes
         self.trim = 0
@@ -252,6 +258,11 @@ class LightMeter:
                 self.ranges[name] = (int(low.group(1)), int(high.group(1)))
                 self.sources[name] = 'camera'
 
+        # Which name this camera's continuous autofocus goes by, if it has one.
+        self.focus_ctrl = (FOCUS_CTRL if FOCUS_CTRL in seen
+                           else FOCUS_CTRL_LEGACY if FOCUS_CTRL_LEGACY in seen
+                           else None)
+
         # The same test the preset engine uses to tell the two cameras apart.
         if 'exposure_time_absolute' in seen:
             self.camera_kind = 'modern'
@@ -290,6 +301,31 @@ class LightMeter:
             return {}
         out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl', ','.join(names)])
         return {k: int(v) for k, v in _VALUE_RE.findall(out) if k in self.ranges}
+
+    def refocus(self):
+        """Re-run the autofocus after a light change.
+
+        Changing gain, brightness or contrast changes what the autofocus is
+        looking at, and the camera does not always re-run it on its own: the
+        first seconds after a change come out soft, which on a recording is the
+        part you most want sharp. Switching continuous autofocus off and
+        straight back on makes it start a fresh search.
+
+        It ends switched ON every time. Nothing in these scripts ever leaves
+        the camera in manual focus.
+
+        The pause between off and on is there because the driver has to see the
+        control actually change state; without it the two writes can land in
+        the same instant and nothing is re-triggered. A third of a second is
+        enough and is not long enough to be felt."""
+        # Falls back to the current control name when the probe found nothing,
+        # so autofocus still ends up on; a write to a control the camera lacks
+        # fails harmlessly.
+        ctrl = self.focus_ctrl or FOCUS_CTRL
+        _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}=0'])
+        time.sleep(0.33)
+        _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}=1'])
+        return True
 
     def sharpness_for(self, gain_now):
         """The sharpness this much gain calls for, in the control's own
@@ -337,6 +373,8 @@ class LightMeter:
         # is a value this loop owns outright rather than a trim away from the
         # preset's own.
         self.set_sharpness(self.wrote.get('gain'))
+        # The light just moved, so give the autofocus a fresh start on it.
+        self.refocus()
 
     # ---- the picture ----
 
@@ -527,6 +565,8 @@ class LightMeter:
                 # The preset just overwrote sharpness with its own value, so
                 # put the wanted sharpness back for the gain it runs at.
                 sharp = self.set_sharpness(have.get('gain'))
+                # A preset just changed the light, so refocus for it as well.
+                self.refocus()
                 return ('light meter: learnt the current preset as the baseline'
                         + (f', sharpness set to {sharp}' if sharp is not None else ''))
             # Rounding, not an outside change: keep the baseline and the trim,

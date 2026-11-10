@@ -82,12 +82,12 @@ LEGACY = {
     # 7 rather than near maximum; 109 of 255 is the same proportion. Set
     # sharpness back to 250 here if you prefer the old look.
     'night':      dict(sharpness=109, brightness=175, contrast=223, saturation=64,
-                       gain=255, exposure=2047, aepri=1, focus=51,
+                       gain=255, exposure=2047, aepri=1,
                        backlight_compensation=0, zoom_absolute=1),
     # Colour noise is most of what makes a dark frame look muddy, so this
     # trades colour for a cleaner, apparently brighter picture.
     'night_mono': dict(sharpness=72, brightness=175, contrast=223, saturation=0,
-                       gain=255, exposure=2047, aepri=1, focus=51,
+                       gain=255, exposure=2047, aepri=1,
                        backlight_compensation=0, zoom_absolute=1),
     # backlight_compensation used to be left out of the daylight rows entirely.
     # The apply loop skips any key that is absent, so it was never sent and
@@ -100,16 +100,16 @@ LEGACY = {
     # brightness mid-range -> 128, contrast 32 of 95 -> 86, saturation 64 of
     # 120 -> 136. Both rows are deliberately identical.
     'golden_am':  dict(sharpness=109, brightness=128, contrast=86, saturation=136,
-                       gain=0, exposure=60, aepri=1, focus=50,
+                       gain=0, exposure=60, aepri=1,
                        backlight_compensation=6, zoom_absolute=0, auto_wb=1),
     'day':        dict(sharpness=109, brightness=128, contrast=86, saturation=136,
-                       gain=0, exposure=60, aepri=1, focus=50,
+                       gain=0, exposure=60, aepri=1,
                        backlight_compensation=6, zoom_absolute=0, auto_wb=1),
     'bright_sun': dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=0, exposure=4, aepri=0, focus=0,
+                       gain=0, exposure=4, aepri=0,
                        backlight_compensation=0, zoom_absolute=1),
     'golden_pm':  dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=104, exposure=50, aepri=0, focus=0,
+                       gain=104, exposure=50, aepri=0,
                        backlight_compensation=16, zoom_absolute=1, auto_wb=1),
 }
 
@@ -125,25 +125,25 @@ MODERN = {
     # the aperture priority exposure instead. backlight_compensation is off at
     # night for the same reason: it lifts shadows, which is more of the fog.
     'night':      dict(sharpness=3, brightness=24, contrast=56, saturation=30,
-                       gain=100, exposure=5000, aepri=0, focus=51,
+                       gain=100, exposure=5000, aepri=0,
                        backlight_compensation=0, zoom_absolute=0),
     'night_mono': dict(sharpness=2, brightness=24, contrast=56, saturation=0,
-                       gain=100, exposure=5000, aepri=0, focus=51,
+                       gain=100, exposure=5000, aepri=0,
                        backlight_compensation=0, zoom_absolute=0),
     # Day and Golden AM are the camera's own default light settings, copied
     # from the Defaults preset in the ONN settings GUI rather than tuned.
     # Both rows are deliberately identical.
     'golden_am':  dict(sharpness=3, brightness=0, contrast=32, saturation=64,
-                       gain=0, exposure=157, aepri=1, focus=50,
+                       gain=0, exposure=157, aepri=1,
                        backlight_compensation=6, zoom_absolute=0, auto_wb=1),
     'day':        dict(sharpness=3, brightness=0, contrast=32, saturation=64,
-                       gain=0, exposure=157, aepri=1, focus=50,
+                       gain=0, exposure=157, aepri=1,
                        backlight_compensation=6, zoom_absolute=0, auto_wb=1),
     'bright_sun': dict(sharpness=7, brightness=-30, contrast=40, saturation=50,
-                       gain=0, exposure=2, aepri=0, focus=50,
+                       gain=0, exposure=2, aepri=0,
                        backlight_compensation=0, zoom_absolute=0),
     'golden_pm':  dict(sharpness=5, brightness=8, contrast=28, saturation=70,
-                       gain=35, exposure=250, aepri=0, focus=50,
+                       gain=35, exposure=250, aepri=0,
                        backlight_compensation=10, zoom_absolute=0, auto_wb=1),
 }
 
@@ -308,8 +308,19 @@ def apply_preset(preset, device='/dev/video0'):
             cam.set_ctrl(name, vals[name])
 
     # Focus is set manually so the camera does not hunt in the dark.
+    # Continuous autofocus, always, on every preset. Nothing here ever leaves
+    # the camera in manual focus.
+    #
+    # It is switched off and straight back on rather than simply set to 1,
+    # because the light this preset just changed is what the autofocus has to
+    # work with: the camera does not always re-run its search on its own, and
+    # the first seconds after a preset would otherwise come out soft. The pause
+    # is there so the driver sees the control actually change state - without
+    # it the two writes can land in the same instant and nothing is
+    # re-triggered.
     cam.set_ctrl(cam.focus_auto, 0)
-    cam.set_ctrl('focus_absolute', vals.get('focus'))
+    time.sleep(0.33)
+    cam.set_ctrl(cam.focus_auto, 1)
     cam.set_ctrl('zoom_absolute', vals.get('zoom_absolute'))
 
     # White balance. Automatic where the preset asks for it, and also when this

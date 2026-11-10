@@ -216,6 +216,24 @@ Sharpening is contrast enhancement at the pixel level and it sharpens noise as
 happily as it sharpens the edge of a number plate, which is the only reason to
 ease off at all.
 
+### Focus
+
+Continuous autofocus is on at all times, and nothing in these programs ever
+leaves the camera in manual focus. Every preset ends by switching autofocus off
+and straight back on, and so does every correction the light meter makes.
+
+That toggle is the point of it. Changing gain, brightness or contrast changes
+what the autofocus is looking at, and the camera does not always re-run its
+search on its own - so the first seconds after a light change come out soft and
+out of focus, which on a recording is exactly the part you want sharp. Setting
+the control to 1 when it is already 1 does nothing; turning it off and back on
+starts a fresh search. There is a third of a second between the two writes,
+because the driver has to see the control actually change state - land both in
+the same instant and nothing is re-triggered.
+
+The preset tables used to carry a fixed focus distance, applied with autofocus
+off. That column is gone and `focus_absolute` is no longer set.
+
 ### Control ranges
 
 At startup the camera is asked what its controls can actually do
