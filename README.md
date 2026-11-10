@@ -26,7 +26,7 @@ different control families, so it suits an older webcam and a current one.
 
 ```
 pip3 install astral
-sudo apt-get -y install v4l-utils python3-pip imagemagick curl
+sudo apt-get -y install v4l-utils python3-pip imagemagick ffmpeg curl
 ```
 
 Keep all of the project files in the same folder.
@@ -232,8 +232,23 @@ export WEBCAM_TARGET=100        # target grey level out of 255, optional
 export WEBCAM_DEVICE=/dev/video0
 ```
 
-With no snapshot set, nothing is corrected and the presets stand as they always
-did.
+The default folder is
+`/home/x800/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture`.
+
+**Taking the snapshots.** The folder is created at startup if it is not there.
+If the recording software is writing stills into it, those are what get
+measured. If it is not - an empty folder on the first run - a frame is grabbed
+here instead with ffmpeg. That only works while the camera is free: a V4L2
+camera lets one program stream at a time, so if the recording software has the
+device the grab fails with a busy error, reported once rather than every five
+seconds all night.
+
+**Only the last 30 are kept.** Each new snapshot prunes the folder back to the
+newest 30, oldest deleted first, and the same happens once at startup. Every
+`.jpg` in the folder counts, whoever wrote it.
+
+With no snapshot available, nothing is corrected and the presets stand as they
+always did.
 
 ## Files
 

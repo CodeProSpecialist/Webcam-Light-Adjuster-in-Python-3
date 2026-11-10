@@ -56,6 +56,7 @@ try:
     # to the ranges these scripts already used.
     light_meter = LightMeter(device=os.environ.get('WEBCAM_DEVICE', '/dev/video0'))
     print(light_meter.range_report())
+    print(light_meter.prepare_snapshots())
 except Exception as problem:                                  # noqa: BLE001
     print(f'automatic light adjustment unavailable: {problem}', file=sys.stderr)
     light_meter = None

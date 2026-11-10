@@ -39,6 +39,7 @@ Needs ImageMagick for the measuring:  sudo apt install imagemagick
 
 import glob
 import os
+import shutil
 import re
 import subprocess
 import time
@@ -97,6 +98,9 @@ TRIM_RULE = {
 
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
+# Snapshots to keep in the folder. The oldest beyond this are deleted.
+SNAP_KEEP = 30
+
 # Sharpness, as a fraction of the control's range: full sharpness in daylight
 # and through the golden hours, backed off to 80-90% at night.
 #
@@ -150,7 +154,13 @@ _RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((?:int|bool|menu|intmenu)\)
 _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
 
 # Directories worth looking in when nothing is configured.
+# The folder the recording software writes its stills into. WEBCAM_SNAPSHOT
+# overrides it; this is the default so that nothing needs setting for the
+# camera these scripts were written for.
+SNAPSHOT_DEFAULT = '/home/x800/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture'
+
 SNAPSHOT_GUESSES = (
+    SNAPSHOT_DEFAULT,
     os.path.expanduser('~/webcam-snapshots'),
     os.path.expanduser('~/.xeoma/snapshots'),
     '/opt/Xeoma/snapshots',
@@ -172,7 +182,8 @@ def _run(args):
 class LightMeter:
     def __init__(self, device='/dev/video0', snapshot=None, target=MEAN_TARGET):
         self.device = device or os.environ.get('WEBCAM_DEVICE', '/dev/video0')
-        self.snapshot = snapshot if snapshot is not None else os.environ.get('WEBCAM_SNAPSHOT', '')
+        self.snapshot = snapshot if snapshot is not None else \
+            os.environ.get('WEBCAM_SNAPSHOT', SNAPSHOT_DEFAULT)
         self.target = target
         self.ranges = {}        # control -> (min, max), read from the camera
         self.sources = {}       # control -> 'camera' or 'fallback', for reporting
@@ -185,6 +196,8 @@ class LightMeter:
         self.last_dir = 0
         self.last_pass = 0.0
         self.tmp = '/tmp/.webcam-meter.jpg'
+        self.capture_note = ''     # set once, so a busy camera is not shouted about
+        self.capture_checked = False
         # The startup probe. Done here so that simply creating the meter asks
         # the hardware what it can do, before any correction is attempted.
         self.learn_ranges()
@@ -310,6 +323,96 @@ class LightMeter:
 
     # ---- the picture ----
 
+    # ---- making the snapshots, and keeping only the last 30 ----
+
+    def snap_dir(self):
+        """The snapshot folder, when the source is a folder at all. A single
+        file or an http URL is somebody else's to manage, so neither is
+        written to or pruned."""
+        source = self.snapshot
+        if not source or source.startswith('http://') or source.startswith('https://'):
+            return None
+        return None if os.path.isfile(source) else source
+
+    def prune_snapshots(self):
+        """Delete the oldest until only SNAP_KEEP are left.
+
+        Everything with a .jpg name in the folder counts, whoever wrote it,
+        because the folder is there for these snapshots and nothing else.
+        Point the snapshot setting at a folder holding pictures worth keeping
+        and they will be pruned too."""
+        folder = self.snap_dir()
+        if not folder or not os.path.isdir(folder):
+            return 0
+        shots = glob.glob(os.path.join(folder, '*.jpg')) + \
+                glob.glob(os.path.join(folder, '*.jpeg'))
+        if len(shots) <= SNAP_KEEP:
+            return 0
+        shots.sort(key=os.path.getmtime)            # oldest first
+        doomed = shots[:len(shots) - SNAP_KEEP]
+        for path in doomed:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return len(doomed)
+
+    def capture_snapshot(self):
+        """Grab one frame into the snapshot folder with ffmpeg. Returns the
+        path, or None when the camera is busy, ffmpeg is missing, or there is
+        no folder to write to.
+
+        The grab only works while the camera is free. A V4L2 camera lets one
+        program stream at a time, so if the recording software has the device
+        this fails with a busy error and there is nothing to be done about it:
+        the loop then measures whatever stills that software writes, which is
+        the arrangement this was built for. The failure is noted once and then
+        left alone, because a warning every five seconds all night is worse
+        than the problem."""
+        folder = self.snap_dir()
+        if not folder:
+            return None
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            return None
+
+        if not self.capture_checked:
+            self.capture_checked = True
+            if shutil.which('ffmpeg') is None:
+                self.capture_note = 'ffmpeg is not installed, so no snapshots can be taken here'
+                return None
+        if self.capture_note:
+            return None
+
+        name = os.path.join(folder, time.strftime('snapshot-%Y%m%d-%H%M%S.jpg'))
+        _run(['ffmpeg', '-nostdin', '-loglevel', 'quiet', '-f', 'v4l2',
+              '-i', self.device, '-frames:v', '1', '-q:v', '2', '-y', name])
+        if not os.path.isfile(name) or not os.path.getsize(name):
+            if os.path.exists(name):
+                try:
+                    os.remove(name)
+                except OSError:
+                    pass
+            self.capture_note = 'camera is busy, so stills come from the recording software'
+            return None
+        self.prune_snapshots()
+        return name
+
+    def prepare_snapshots(self):
+        """Make the snapshot folder if it is not there and bring it down to
+        size, so the first run starts from a clean folder of at most 30."""
+        folder = self.snap_dir()
+        if not folder:
+            return 'light meter: no snapshot folder set'
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            return f'light meter: cannot create {folder}'
+        gone = self.prune_snapshots()
+        return (f'light meter: snapshots in {folder}, keeping the newest {SNAP_KEEP}'
+                + (f' (deleted {gone} older)' if gone else ''))
+
     def find_snapshot(self):
         """Find a still to measure. Returns a path, or None if there is
         nothing usable."""
@@ -414,10 +517,15 @@ class LightMeter:
             self.hold -= 1
             return f'light meter: trim {self.trim:+d}, waiting for the picture to catch up'
 
+        # Take one of our own first. When the recording software has the
+        # camera this does nothing and the still it wrote is used instead.
+        self.capture_snapshot()
+
         frame = self.find_snapshot()
         measured = self.measure(frame)
         if measured is None:
-            return 'light meter: no snapshot to measure, the preset stands as it is'
+            return ('light meter: no snapshot to measure, the preset stands as it is'
+                    + (f' - {self.capture_note}' if self.capture_note else ''))
         mean, hot, cold = measured
 
         # Median of the last three keeps a passing pair of headlights from
