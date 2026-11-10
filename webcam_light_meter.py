@@ -275,6 +275,7 @@ class LightMeter:
         self.tmp = '/tmp/.webcam-meter.jpg'
         self.capture_note = ''     # set once, so a busy camera is not shouted about
         self.capture_checked = False
+        self.busy_until = 0.0      # when the camera is held, stop asking for a while
         # The startup probe. Done here so that simply creating the meter asks
         # the hardware what it can do, before any correction is attempted.
         self.learn_ranges()
@@ -467,6 +468,53 @@ class LightMeter:
                 pass
         return len(doomed)
 
+    def camera_holder(self):
+        """Who has the camera open, if anyone.
+
+        This exists because of how the programs actually get used: the
+        snapshot grab works when this is started BEFORE the recording
+        software, and stops working the moment that software opens the device
+        - a V4L2 camera lets one program stream at a time.
+
+        Knowing that is worth more than retrying blindly. If the recorder has
+        the camera, running ffmpeg at it every five seconds achieves nothing,
+        and there is a real risk in it: if the recorder drops and re-opens its
+        stream at the instant our grab lands, our grab wins and the recorder
+        fails to come back. So when something else holds the device, nothing
+        is sent to it at all.
+        """
+        if not os.path.exists(self.device):
+            return None
+        mine = os.getpid()
+
+        if shutil.which('fuser'):
+            try:
+                out = subprocess.run(['fuser', '-v', self.device], capture_output=True,
+                                     text=True, timeout=10)
+                text = (out.stdout or '') + (out.stderr or '')
+            except (OSError, subprocess.SubprocessError):
+                text = ''
+            names = set()
+            for line in text.splitlines():
+                # fuser -v lines look like:  USER  PID  ACCESS  COMMAND
+                found = re.match(r'^\s*\S*\s+(\d+)\s+\S+\s+(\S+)\s*$', line)
+                if found and int(found.group(1)) != mine:
+                    names.add(f'{found.group(2)} (pid {found.group(1)})')
+            if names:
+                return ', '.join(sorted(names))
+
+        if shutil.which('lsof'):
+            out = _run(['lsof', '-F', 'cp', self.device])
+            pid, names = None, set()
+            for line in out.splitlines():
+                if line.startswith('p'):
+                    pid = line[1:]
+                elif line.startswith('c') and pid and int(pid) != mine:
+                    names.add(f'{line[1:]} (pid {pid})')
+            if names:
+                return ', '.join(sorted(names))
+        return None
+
     def capture_snapshot(self):
         """Grab one frame into the snapshot folder with ffmpeg. Returns the
         path, or None when the camera is busy, ffmpeg is missing, or there is
@@ -498,6 +546,19 @@ class LightMeter:
         # session. ffmpeg missing is the one thing that will not fix itself.
         if 'not installed' in self.capture_note:
             return None
+
+        # Something else has the camera. Say who, leave the device alone, and
+        # look again in a minute rather than every five seconds.
+        holder = self.camera_holder()
+        if holder:
+            self.capture_note = (f'{holder} has {self.device} - snapshots come from the '
+                                 'recording software while it runs')
+            log(f'camera held by {holder}, not grabbing')
+            self.busy_until = time.time() + 60
+            return None
+        if time.time() < self.busy_until:
+            return None
+
         self.capture_note = ''
 
         name = os.path.join(folder, time.strftime('snapshot-%Y%m%d-%H%M%S.jpg'))

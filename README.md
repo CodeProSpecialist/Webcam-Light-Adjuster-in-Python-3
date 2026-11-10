@@ -332,7 +332,7 @@ guessing. The reasons it can give:
 
 | Message | What to do |
 |---------|------------|
-| `camera is busy (/dev/video0 is held by something else)` | The recording software has the camera. Nothing can be grabbed here; point the setting at a folder that software writes stills into, or stop it long enough to test. |
+| `<program> (pid N) has /dev/video0` | That program has the camera. Start this one before it to take snapshots here, or have it write stills into the folder. |
 | `no permission to open /dev/video0` | `sudo usermod -aG video $USER`, then log out and back in. |
 | `/dev/video0 does not exist` | The camera is unplugged, or it is on another node - check `v4l2-ctl --list-devices`. |
 | `ffmpeg is not installed` | `sudo apt install ffmpeg`. |
@@ -437,6 +437,26 @@ here instead with ffmpeg. That only works while the camera is free: a V4L2
 camera lets one program stream at a time, so if the recording software has the
 device the grab fails with a busy error, reported once rather than every five
 seconds all night.
+
+**Which program opens the camera first decides this.** A V4L2 camera lets one
+program stream at a time, so:
+
+* Start this program **before** the recording software and the snapshots are
+  taken here, every five seconds, for as long as the camera stays free.
+* Once the recording software opens the camera, the grab stops - and the
+  status line names the process holding it, something like
+  `Xeoma (pid 2317) has /dev/video0`. Nothing is sent to the device while
+  another program has it: retrying would achieve nothing, and if the recorder
+  dropped and re-opened its stream at the instant a grab landed, the grab
+  would win and the recorder would fail to come back. The check is repeated
+  once a minute rather than every five seconds.
+* While the recorder has the camera, the folder is still read - so stills that
+  the recording software writes there are measured exactly as before, and the
+  light keeps being corrected.
+
+The practical arrangement is either one: let this program take the snapshots
+by starting it first, or have the recording software write stills into that
+folder and start it whenever you like.
 
 **Only the last 30 are kept.** Each new snapshot prunes the folder back to the
 newest 30, oldest deleted first, and the same happens once at startup. Every
