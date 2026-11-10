@@ -51,7 +51,11 @@ def run_preset(script):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from webcam_light_meter import LightMeter
+    # Creating it runs the startup probe: the camera is asked what its
+    # controls can actually do, and anything it does not answer for falls back
+    # to the ranges these scripts already used.
     light_meter = LightMeter(device=os.environ.get('WEBCAM_DEVICE', '/dev/video0'))
+    print(light_meter.range_report())
 except Exception as problem:                                  # noqa: BLE001
     print(f'automatic light adjustment unavailable: {problem}', file=sys.stderr)
     light_meter = None

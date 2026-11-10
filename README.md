@@ -139,6 +139,29 @@ It takes the median of three samples, needs two consecutive samples to agree
 before it moves, and waits two samples after each change, so passing headlights
 do not drag the picture dark for the next minute.
 
+### Sharpness
+
+Sharpness is set outright rather than trimmed, and it overrides whatever the
+preset asked for: full sharpness in daylight and through the golden hours,
+eased to 80-90% of the control's range at night. What decides night from day is
+gain rather than the clock - gain is the only control that amplifies sensor
+noise along with the signal, so a camera near the top of its gain range is
+working in the dark whatever the time, and the golden hour presets, which sit
+under half the gain range, come out at full sharpness. Sharpening is contrast
+enhancement at the pixel level and it sharpens noise as happily as it sharpens
+the edge of a number plate, which is the only reason to ease off at all.
+
+### Control ranges
+
+At startup each program asks the camera itself what its controls can do
+(`v4l2-ctl -L`) and uses those ranges, because a trim step is a fraction of a
+control's range: guess 0-64 for a contrast control that really runs 0-95 and
+every correction lands a third short. Anything the camera does not answer for
+falls back to the ranges these programs were already using - the ONN set for a
+modern camera, the 0-255 set for the older one - so an unanswered control still
+gets a sensible step instead of being dropped. The startup line says which
+ranges came from the camera and which were assumed.
+
 ### Setting it up
 
 The camera cannot be opened for this: V4L2 allows only one program to stream,

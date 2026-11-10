@@ -97,7 +97,56 @@ TRIM_RULE = {
 
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
-_RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\(\w+\)')
+# Sharpness, as a fraction of the control's range: full sharpness in daylight
+# and through the golden hours, backed off to 80-90% at night.
+#
+# This is set outright rather than trimmed, and it overrides whatever sharpness
+# the preset asked for - including the night preset's deliberately low value.
+# That is on purpose and on request: the picture is wanted sharp.
+#
+# What decides night from day here is gain, not the clock. Gain is the only
+# control that amplifies the sensor's noise along with the signal, so a camera
+# running near the top of its gain range is by definition working in the dark
+# whatever time the clock says - and the golden hour presets, which sit under
+# half of the gain range, come out at full sharpness as they should.
+# Sharpening is contrast enhancement at the pixel level and it sharpens noise
+# as happily as it sharpens the edge of a number plate, which is the one
+# reason to ease off at all once the gain is high.
+SHARP_DAY = 1.00       # at or below half gain: full sharpness
+SHARP_NIGHT = 0.90     # just into high gain
+SHARP_DARK = 0.80      # at the top of the gain range
+SHARP_KNEE = 0.50      # the gain fraction where the easing off starts
+
+# The ranges to use when the camera does not report one.
+#
+# The hardware is asked first, at startup, and whatever it says is what gets
+# used - that is the only way to be right about a camera that has not been seen
+# before. These two tables are the fallback for anything it does not answer
+# for, and they are not invented: they are the ranges these scripts have been
+# using all along, the modern set from the ONN webcam's own sliders and the
+# legacy set from the older camera's 0-255 controls.
+#
+# Which table applies is decided by the same test the preset engine uses: a
+# camera with exposure_time_absolute is the modern kind, one with
+# exposure_absolute is the older kind.
+FALLBACK_MODERN = {
+    'brightness': (-64, 64),
+    'contrast': (0, 95),
+    'saturation': (0, 120),
+    'gain': (0, 100),
+    'backlight_compensation': (0, 12),
+    'sharpness': (0, 7),
+}
+FALLBACK_LEGACY = {
+    'brightness': (0, 255),
+    'contrast': (0, 255),
+    'saturation': (0, 255),
+    'gain': (0, 255),
+    'backlight_compensation': (0, 16),
+    'sharpness': (0, 255),
+}
+
+_RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((?:int|bool|menu|intmenu)\)', re.I)
 _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
 
 # Directories worth looking in when nothing is configured.
@@ -126,6 +175,8 @@ class LightMeter:
         self.snapshot = snapshot if snapshot is not None else os.environ.get('WEBCAM_SNAPSHOT', '')
         self.target = target
         self.ranges = {}        # control -> (min, max), read from the camera
+        self.sources = {}       # control -> 'camera' or 'fallback', for reporting
+        self.camera_kind = 'unknown'
         self.base = {}          # the preset's own values, re-learnt automatically
         self.wrote = {}         # what this loop last sent, to spot outside changes
         self.trim = 0
@@ -134,32 +185,108 @@ class LightMeter:
         self.last_dir = 0
         self.last_pass = 0.0
         self.tmp = '/tmp/.webcam-meter.jpg'
+        # The startup probe. Done here so that simply creating the meter asks
+        # the hardware what it can do, before any correction is attempted.
+        self.learn_ranges()
 
     # ---- the camera ----
 
     def learn_ranges(self):
-        """Ask the camera for the real range of each control this loop uses.
-        Controls the camera does not have are left out, and never touched."""
+        """Ask the camera, at startup, for the real range of every control
+        this loop uses, and fall back to the ranges these scripts already used
+        for anything it does not answer for.
+
+        This matters more than it looks. A trim step is a fraction of a
+        control's range, so a wrong range means a step of the wrong size: guess
+        0-64 for a contrast control that really runs 0-95 and every correction
+        lands a third short. Asking the hardware is the only way to be right
+        about a camera that has not been seen before, and the fallback means an
+        unanswered control still gets a sensible step instead of being
+        dropped."""
         self.ranges = {}
+        self.sources = {}
+        self.camera_kind = 'unknown'
+
+        seen = set()
         for line in _run(['v4l2-ctl', '-d', self.device, '-L']).splitlines():
             found = _RANGE_RE.match(line)
-            if not found or found.group(1) not in TRIM_RULE:
+            if not found:
+                continue
+            name = found.group(1)
+            seen.add(name)
+            if name not in TRIM_RULE and name != 'sharpness':
                 continue
             low = re.search(r'min=(-?\d+)', line)
             high = re.search(r'max=(-?\d+)', line)
             if low and high and int(high.group(1)) > int(low.group(1)):
-                self.ranges[found.group(1)] = (int(low.group(1)), int(high.group(1)))
+                self.ranges[name] = (int(low.group(1)), int(high.group(1)))
+                self.sources[name] = 'camera'
+
+        # The same test the preset engine uses to tell the two cameras apart.
+        if 'exposure_time_absolute' in seen:
+            self.camera_kind = 'modern'
+        elif 'exposure_absolute' in seen:
+            self.camera_kind = 'legacy'
+
+        # Anything the camera did not answer for gets the settings already in
+        # use. With no answer at all - camera unplugged, or v4l2-ctl missing -
+        # the modern table is the one to assume, since that is the camera these
+        # scripts are run against.
+        fallback = FALLBACK_LEGACY if self.camera_kind == 'legacy' else FALLBACK_MODERN
+        for name in list(TRIM_RULE) + ['sharpness']:
+            if name in self.ranges or name not in fallback:
+                continue
+            self.ranges[name] = fallback[name]
+            self.sources[name] = 'fallback'
         return len(self.ranges)
+
+    def range_report(self):
+        """One line saying what the startup probe found, for the log."""
+        from_camera = sorted(k for k, v in self.sources.items() if v == 'camera')
+        assumed = sorted(k for k, v in self.sources.items() if v == 'fallback')
+        text = f'light meter: {self.camera_kind} camera'
+        if from_camera:
+            text += ', ranges read from the camera for ' + ', '.join(from_camera)
+        if assumed:
+            text += ', using the settings already in use for ' + ', '.join(assumed)
+        return text
 
     def read_controls(self):
         """Read the controls back in one call. v4l2-ctl takes a comma
         separated list, which is one process instead of five every five
         seconds."""
-        names = sorted(self.ranges)
+        names = sorted(k for k in self.ranges if k in TRIM_RULE)
         if not names:
             return {}
         out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl', ','.join(names)])
         return {k: int(v) for k, v in _VALUE_RE.findall(out) if k in self.ranges}
+
+    def sharpness_for(self, gain_now):
+        """The sharpness this much gain calls for, in the control's own
+        units. None when the camera has no sharpness control or no gain to
+        judge by."""
+        if 'sharpness' not in self.ranges or 'gain' not in self.ranges or gain_now is None:
+            return None
+        gain_low, gain_high = self.ranges['gain']
+        sharp_low, sharp_high = self.ranges['sharpness']
+        fraction = (gain_now - gain_low) / (gain_high - gain_low)
+        fraction = max(0.0, min(1.0, fraction))
+        if fraction <= SHARP_KNEE:
+            want = SHARP_DAY
+        else:
+            # Straight line from 90% at the knee down to 80% at full gain.
+            into_dark = (fraction - SHARP_KNEE) / (1 - SHARP_KNEE)
+            want = SHARP_NIGHT - (SHARP_NIGHT - SHARP_DARK) * into_dark
+        value = int(round(sharp_low + (sharp_high - sharp_low) * want))
+        return max(sharp_low, min(sharp_high, value))
+
+    def set_sharpness(self, gain_now):
+        """Send the wanted sharpness for this much gain. Returns what was
+        sent, or None."""
+        value = self.sharpness_for(gain_now)
+        if value is not None:
+            _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'sharpness={value}'])
+        return value
 
     def apply_trim(self, trim):
         """Send the given trim, worked out from the preset's own baseline."""
@@ -175,6 +302,11 @@ class LightMeter:
             value = max(low, min(high, self.base[ctrl] + per * self.trim))
             _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}={value}'])
             self.wrote[ctrl] = value
+        # Sharpness follows the gain just sent. It is deliberately kept out of
+        # self.wrote: that is how an outside change is spotted, and sharpness
+        # is a value this loop owns outright rather than a trim away from the
+        # preset's own.
+        self.set_sharpness(self.wrote.get('gain'))
 
     # ---- the picture ----
 
@@ -242,8 +374,10 @@ class LightMeter:
             return None
         self.last_pass = now
 
-        if not self.ranges and not self.learn_ranges():
-            return 'light meter: camera has none of the controls it adjusts'
+        # Normally already done at startup; this covers a camera that was
+        # not plugged in then.
+        if not self.ranges:
+            self.learn_ranges()
 
         # Re-learn the baseline if anything other than this loop moved the
         # controls - a preset firing, or a hand on a slider. This is how the
@@ -267,7 +401,11 @@ class LightMeter:
                 self.last_dir = 0
                 self.means = []
                 self.hold = 1      # let the new preset show up before correcting
-                return 'light meter: learnt the current preset as the baseline'
+                # The preset just overwrote sharpness with its own value, so
+                # put the wanted sharpness back for the gain it runs at.
+                sharp = self.set_sharpness(have.get('gain'))
+                return ('light meter: learnt the current preset as the baseline'
+                        + (f', sharpness set to {sharp}' if sharp is not None else ''))
             # Rounding, not an outside change: keep the baseline and the trim,
             # and accept what the driver actually holds as what was written.
             self.wrote.update(have)
