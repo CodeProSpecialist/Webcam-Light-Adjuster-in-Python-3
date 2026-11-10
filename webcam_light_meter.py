@@ -162,7 +162,12 @@ _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
 # The folder the recording software writes its stills into. WEBCAM_SNAPSHOT
 # overrides it; this is the default so that nothing needs setting for the
 # camera these scripts were written for.
-SNAPSHOT_DEFAULT = '/home/x800/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture'
+# os.path.expanduser falls back to the password database when HOME is not set,
+# which is what happens under some cron and systemd setups - so this answers
+# for whichever user is actually running the script, with no user name written
+# into it. The folder is created at startup if it is not there.
+SNAPSHOT_DEFAULT = os.path.expanduser(
+    '~/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture')
 
 SNAPSHOT_GUESSES = (
     SNAPSHOT_DEFAULT,
