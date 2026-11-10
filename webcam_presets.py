@@ -64,16 +64,24 @@ LEGACY = {
     'night_mono': dict(sharpness=72, brightness=255, contrast=67, saturation=0,
                        gain=255, exposure=2047, aepri=1, focus=51,
                        backlight_compensation=255, zoom_absolute=1),
+    # These four used to leave backlight_compensation out entirely. The apply
+    # loop skips any key that is absent, so it was never sent and kept whatever
+    # the last preset set. Coming off night that is 255, which washes out a
+    # daylight picture badly, and since night runs every evening that was the
+    # value that stuck. The numbers are the modern table's values scaled onto
+    # this camera's 0-255 range, the same way the rest of this table was.
     'golden_am':  dict(sharpness=250, brightness=170, contrast=32, saturation=32,
                        gain=150, exposure=200, aepri=0, focus=0,
-                       zoom_absolute=1),
+                       backlight_compensation=16, zoom_absolute=1),
     'day':        dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=104, exposure=4, aepri=0, focus=0, zoom_absolute=1),
+                       gain=104, exposure=4, aepri=0, focus=0,
+                       backlight_compensation=6, zoom_absolute=1),
     'bright_sun': dict(sharpness=250, brightness=153, contrast=32, saturation=32,
-                       gain=0, exposure=4, aepri=0, focus=0, zoom_absolute=1),
+                       gain=0, exposure=4, aepri=0, focus=0,
+                       backlight_compensation=0, zoom_absolute=1),
     'golden_pm':  dict(sharpness=250, brightness=153, contrast=32, saturation=32,
                        gain=104, exposure=50, aepri=0, focus=0,
-                       zoom_absolute=1),
+                       backlight_compensation=16, zoom_absolute=1),
 }
 
 # modern: the numbers tuned for the ONN webcam.
@@ -158,27 +166,73 @@ class Camera:
         m = re.search(r':\s*(-?\d+)', out)
         return int(m.group(1)) if m else None
 
-    def set_long_exposure(self, wanted):
-        """Ask for the longest exposure the driver will take.
+    def _exposure_sticks(self, try_val):
+        """Set the exposure and report what held, or None if it was clamped."""
+        subprocess.run(['v4l2-ctl', '-d', self.device,
+                        '--set-ctrl', f'{self.exp_ctrl}={try_val}'],
+                       stderr=subprocess.DEVNULL)
+        got = self.get_ctrl(self.exp_ctrl)
+        return got if got is not None and got >= try_val * 0.9 else None
 
-        It clamps anything that does not fit in the frame interval, so request,
-        read back, and step down until one holds.
+    def set_long_exposure(self, wanted):
+        """Ask for the longest exposure the driver will actually take.
+
+        The kernel documents exposure as limited by the frame interval, and the
+        driver clamps anything longer without saying so, so the only way to
+        find the limit is to ask and read back.
+
+        This used to try a fixed ladder of fractions of what was wanted - 100%,
+        80%, 60%, 50%, 40%, 30%, 20%, 10% - and keep the first that stuck. That
+        gives away a lot of light, because the real limit almost never lands on
+        one of eight fixed steps. Measured against a driver that would accept
+        626, the ladder settled on 500; against a legacy limit of 333 it
+        settled on 204, giving away nearly 40% of the exposure time.
+
+        So: try what was asked for, and if it is clamped, binary search for the
+        largest value the driver keeps. A handful more calls, and it lands
+        within a couple of percent of the limit instead of within twenty.
         """
         if self.exp_ctrl not in self.controls:
             return None
-        wanted = min(wanted, self.controls[self.exp_ctrl][1])
-        for frac in (10, 8, 6, 5, 4, 3, 2, 1):
-            try_val = max(1, wanted * frac // 10)
-            subprocess.run(['v4l2-ctl', '-d', self.device,
-                            '--set-ctrl', f'{self.exp_ctrl}={try_val}'],
-                           stderr=subprocess.DEVNULL)
+        lo_range, hi_range = self.controls[self.exp_ctrl]
+        wanted = min(wanted, hi_range)
+        floor = max(1, lo_range)
+
+        got = self._exposure_sticks(wanted)
+        if got is not None:
+            print(f'  {self.exp_ctrl:<30} {got}')
+            return got
+
+        # Clamped. hi is known to fail, lo is the longest known to work.
+        lo, hi = floor, wanted
+        best = self._exposure_sticks(lo)
+        if best is None:
+            # Even the shortest exposure reads back wrong; nothing to search.
             got = self.get_ctrl(self.exp_ctrl)
-            if got is not None and got >= try_val * 0.9:
-                print(f'  {self.exp_ctrl:<30} {got}')
-                return got
-        got = self.get_ctrl(self.exp_ctrl)
-        print(f'  {self.exp_ctrl:<30} {got} (driver clamped)')
-        return got
+            print(f'  {self.exp_ctrl:<30} {got} (driver clamped)')
+            return got
+
+        # Stop once the gap is under 2%, far below anything visible, rather
+        # than burning calls narrowing it to the last unit.
+        rounds = 0
+        while hi - lo > 1 and hi - lo > lo * 0.02 and rounds < 16:
+            rounds += 1
+            mid = (lo + hi) // 2
+            if mid <= lo or mid >= hi:
+                break
+            ok = self._exposure_sticks(mid)
+            if ok is not None:
+                lo, best = mid, ok
+            else:
+                hi = mid
+
+        # Leave the camera on the best value found, since the search may have
+        # ended on a failed attempt.
+        final = self._exposure_sticks(lo)
+        if final is not None:
+            best = final
+        print(f'  {self.exp_ctrl:<30} {best} (driver clamped from {wanted})')
+        return best
 
 
 def apply_preset(preset, device='/dev/video0'):

@@ -3,9 +3,38 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
+
+
+# Run one of the preset wrapper scripts.
+#
+# These used to be called with a bare relative name, as a subprocess running
+# "python3 night-sharp-webcam.py", which only works when the scheduler is
+# started from the directory it lives in. Under cron the working directory is
+# the user's home, so python3 could not find the file, exited 2, and nothing
+# checked the return code - the scheduler looked like it was running fine while
+# the camera never actually changed at sunset. That is the worst kind of
+# failure here, because the one preset you are not awake to notice is night.
+#
+# So: resolve the script next to this file first, then $HOME, then the working
+# directory, the same order the wrapper scripts themselves use; run it with the
+# same interpreter this scheduler is running under rather than whatever
+# "python3" happens to mean; and say something when it fails.
+def run_preset(script):
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (here, os.path.expanduser('~'), os.getcwd()):
+        path = os.path.join(folder, script)
+        if os.path.isfile(path):
+            result = subprocess.run([sys.executable, path])
+            if result.returncode != 0:
+                print(f'{script} exited {result.returncode}', file=sys.stderr)
+            return result.returncode == 0
+    print(f'{script} not found next to {__file__}, in $HOME, or in {os.getcwd()}',
+          file=sys.stderr)
+    return False
 from astral.sun import sun
 from astral.location import LocationInfo
 
@@ -164,7 +193,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'post-sunrise-sharp-webcam.py'])
+            run_preset('post-sunrise-sharp-webcam.py')
 
 
     class DaySharpWebcam:
@@ -173,7 +202,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'day-sharp-webcam.py'])
+            run_preset('day-sharp-webcam.py')
 
 
     class BrightSunSharpWebcam:
@@ -182,7 +211,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'bright-sun-sharp-webcam.py'])
+            run_preset('bright-sun-sharp-webcam.py')
 
 
     class DaySharpWebcam2:
@@ -191,7 +220,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'day-sharp-webcam.py'])
+            run_preset('day-sharp-webcam.py')
 
 
     class PreSunsetSharpWebcam2:
@@ -200,7 +229,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'pre-sunset-sharp-webcam.py'])
+            run_preset('pre-sunset-sharp-webcam.py')
 
 
     class NightSharpWebcam:
@@ -209,7 +238,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'night-sharp-webcam.py'])
+            run_preset('night-sharp-webcam.py')
 
 
     # The legacy Perl repo applies night a second time at sunset + 30, because a
@@ -220,7 +249,7 @@ while True:
             self.target_time = self.target_time.replace(second=0, microsecond=0)
 
         def execute(self):
-            subprocess.run(['python3', 'night-sharp-webcam.py'])
+            run_preset('night-sharp-webcam.py')
 
 
     # Create instances of each subprocess class
