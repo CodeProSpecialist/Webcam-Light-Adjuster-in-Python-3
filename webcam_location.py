@@ -70,6 +70,38 @@ def system_timezone():
     return 'UTC'
 
 
+def timezone_for_coords(lat, lon):
+    """The time zone the coordinates sit in, asked of a service that knows the
+    zone map - not guessed from the system clock.
+
+    This matters because the two are different things. The system zone is
+    whatever this computer was set up with, and a camera reporting to a machine
+    in another state, or a laptop carried across a zone line, would have the sun
+    times worked out for the wrong one. The coordinates are where the camera is,
+    so the zone that belongs to those coordinates is the right answer.
+
+    Two services again, since free ones come and go. Whatever is found is
+    cached with the location, so this is asked once a week at most.
+    """
+    if lat is None or lon is None:
+        return None
+    attempts = (
+        (f'https://timeapi.io/api/TimeZone/coordinate?latitude={lat}&longitude={lon}',
+         'timeZone'),
+        (f'https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}'
+         '&timezone=auto&forecast_days=1', 'timezone'),
+    )
+    for url, key in attempts:
+        try:
+            with urllib.request.urlopen(url, timeout=6) as response:
+                data = json.loads(response.read().decode('utf-8', 'replace'))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            continue
+        if data.get(key):
+            return data[key]
+    return None
+
+
 def save_location(lat, lon, timezone, source):
     try:
         with open(LOCATION_FILE, 'w', encoding='utf-8') as handle:
@@ -134,20 +166,34 @@ def detect_location(force=False):
     env_lat, env_lon = os.environ.get('WEBCAM_LAT'), os.environ.get('WEBCAM_LON')
     if env_lat and env_lon:
         try:
-            return (float(env_lat), float(env_lon),
-                    os.environ.get('WEBCAM_TZ') or system_timezone(),
-                    'WEBCAM_LAT and WEBCAM_LON')
+            lat, lon = float(env_lat), float(env_lon)
+            timezone = (os.environ.get('WEBCAM_TZ')
+                        or timezone_for_coords(lat, lon)
+                        or system_timezone())
+            return lat, lon, timezone, 'WEBCAM_LAT and WEBCAM_LON'
         except ValueError:
             pass
 
     saved = load_location()
     if saved and not force and saved[4] < LOCATION_MAX_AGE:
-        return saved[0], saved[1], saved[2], 'the saved location'
+        lat, lon, timezone = saved[0], saved[1], saved[2]
+        # A settings file written before the zone was worked out from the
+        # coordinates, or by hand without one, gets it filled in once.
+        if not timezone or timezone == 'UTC':
+            better = timezone_for_coords(lat, lon)
+            if better:
+                timezone = better
+                save_location(lat, lon, timezone, saved[3])
+        return lat, lon, timezone, 'the saved location'
 
     found = lookup_online()
     if found:
-        save_location(found[0], found[1], found[2], 'ip lookup')
-        return found[0], found[1], found[2], 'an IP lookup'
+        lat, lon, tz_from_ip = found
+        # The zone that belongs to these coordinates, falling back to the one
+        # the IP lookup volunteered and then to the system's own.
+        timezone = timezone_for_coords(lat, lon) or tz_from_ip or system_timezone()
+        save_location(lat, lon, timezone, 'ip lookup')
+        return lat, lon, timezone, 'an IP lookup'
 
     if saved:
         return (saved[0], saved[1], saved[2],

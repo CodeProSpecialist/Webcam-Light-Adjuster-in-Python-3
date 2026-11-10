@@ -92,10 +92,33 @@ export WEBCAM_LON=-95.8608
 export WEBCAM_TZ=America/Chicago      # optional; the system's zone otherwise
 ```
 
-Set those and no lookup is ever made. Accuracy only has to be rough: a tenth of
-a degree of latitude moves sunrise by well under a minute, and these presets
-switch on offsets of 7 to 122 minutes, so a city-level answer is as good as a
-surveyed one.
+Set those and no IP lookup is ever made. Accuracy only has to be rough: a
+tenth of a degree of latitude moves sunrise by well under a minute, and these
+presets switch on offsets of 7 to 122 minutes, so a city-level answer is as
+good as a surveyed one.
+
+**The time zone comes from the coordinates**, not from the system clock. The
+two are different things: the system zone is whatever this computer was set up
+with, and a camera reporting to a machine in another state, or a laptop carried
+across a zone line, would have its sun times worked out for the wrong one. The
+coordinates are where the camera is, so the zone belonging to those coordinates
+is the right answer - looked up once and cached beside them, from the system's
+own zone only if both services are unreachable. `WEBCAM_TZ` overrides it.
+
+The settings file is written on the first successful lookup and again whenever
+the sunrise and sunset times are fetched over the internet, so the place those
+times were worked out for is what stays saved:
+
+```
+$ cat ~/.webcam-location.conf
+lat=41.2619
+lon=-95.8608
+tz=America/Chicago
+source=confirmed by the sun-times fetch
+saved=2026-11-10 11:13
+```
+
+Delete that file to make it look the location up again.
 
 ## The control window
 

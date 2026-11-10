@@ -79,7 +79,7 @@ from astral.location import LocationInfo
 # Worked out at startup - no place is written down in this file. See
 # webcam_location.py for the order it is worked out in, and for how to pin it
 # with WEBCAM_LAT and WEBCAM_LON.
-from webcam_location import detect_location
+from webcam_location import detect_location, save_location
 
 LATITUDE, LONGITUDE, SUN_TZID, LOCATION_HOW = detect_location()
 TIMEZONE = SUN_TZID
@@ -186,6 +186,9 @@ while True:
         if fetched:
             times = (hhmm_to_today(fetched[0]), hhmm_to_today(fetched[1]))
             save_sun_file(fetched[0], fetched[1], 'online')
+            # The times came back for these coordinates, so the location they
+            # were worked out for is worth keeping as the saved setting.
+            save_location(LATITUDE, LONGITUDE, SUN_TZID, 'confirmed by the sun-times fetch')
             print(f"Fetched sunrise/sunset at {now:%H:%M}: "
                   f"{fetched[0]} / {fetched[1]}")
             SUN_CACHE['date'], SUN_CACHE['times'] = today, times
