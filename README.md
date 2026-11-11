@@ -473,11 +473,15 @@ export WEBCAM_TARGET=100        # target grey level out of 255, optional
 export WEBCAM_DEVICE=/dev/video0
 ```
 
-The default folder is
-`~/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture` under
+The default folder is `~/Pictures/webcam-sample-images` under
 whoever's home directory the program is running as - no user name is written
 into any of this. `$HOME` is used when it is set, and the password database
 when it is not, which is the case under some cron and systemd setups.
+
+The folder used to be
+`~/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture`, and that
+one is still looked in if it exists, so an installation that has been filling
+it for months is not left with nothing to measure.
 
 **Taking the snapshots.** That one folder is created at startup if it is not
 already there, parent folders and all. Nothing else is ever created.

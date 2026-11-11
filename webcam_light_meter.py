@@ -166,11 +166,14 @@ _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
 # which is what happens under some cron and systemd setups - so this answers
 # for whichever user is actually running the script, with no user name written
 # into it. The folder is created at startup if it is not there.
-SNAPSHOT_DEFAULT = os.path.expanduser(
-    '~/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture')
+SNAPSHOT_DEFAULT = os.path.expanduser('~/Pictures/webcam-sample-images')
 
 SNAPSHOT_GUESSES = (
     SNAPSHOT_DEFAULT,
+    # Where this used to put them. Kept so that an installation that has been
+    # filling that folder for months is still found rather than starting over
+    # with nothing to measure.
+    os.path.expanduser('~/Pictures/onn-webcam/program-snapshots-for-auto-adjust-picture'),
     os.path.expanduser('~/webcam-snapshots'),
     os.path.expanduser('~/.xeoma/snapshots'),
     '/opt/Xeoma/snapshots',
