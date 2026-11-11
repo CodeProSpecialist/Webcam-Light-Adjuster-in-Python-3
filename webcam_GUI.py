@@ -24,9 +24,11 @@ program is streaming, which is why any of this works at all.
 """
 
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 
 # First run: check the modules below are installed, and offer to install the
 # apt packages that provide them if they are not. Nothing is printed when
@@ -73,6 +75,17 @@ PREFERRED = [
     'pan_absolute', 'tilt_absolute', 'zoom_absolute', 'privacy',
 ]
 
+# The terminal at the bottom of the window: 80 columns by 15 lines, which is
+# an ordinary terminal's width and about a screenful of the scheduler's log.
+TERMINAL_COLS = 80
+TERMINAL_ROWS = 15
+
+# What runs in it. The scheduler prints the sunrise and sunset times it worked
+# out and the preset it applies at each of them, so having it here means the
+# window shows what the schedule is doing rather than only what this window
+# has done itself.
+TERMINAL_SCRIPT = 'python3-sunrise-sunset.py'
+
 PRESETS = [
     ('Night', 'night', '#222233', 'white'),
     ('Night Mono', 'night-mono', '#000011', 'white'),
@@ -95,6 +108,20 @@ def run(args):
 def home_dir():
     """Where this user's home directory is - no user name written into it."""
     return os.path.expanduser('~')
+
+
+def find_beside(filename):
+    """Next to this file, then the home directory, then the working directory.
+
+    The same order run_preset uses, and for the same reason: these files get
+    copied to ~ and run from either place.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (here, home_dir(), os.getcwd()):
+        path = os.path.join(folder, filename)
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 class Camera:
@@ -169,6 +196,183 @@ def run_preset(name, device):
     return False
 
 
+class TerminalPane:
+    """A terminal at the bottom of the window with a program running in it.
+
+    It is read-only: the program's output comes in, nothing is typed back.
+    That is deliberate - the scheduler takes no input, and a Text widget that
+    cannot be typed into cannot have a stray keystroke scroll it away from the
+    newest line.
+
+    A pipe is read with a blocking read, and a blocking read on the thread
+    running the Tk event loop freezes the window. So a reader thread does the
+    blocking and hands finished lines to a queue, and the event loop drains
+    the queue on a timer. Only the reader thread writes to the queue and only
+    the event loop touches the widget, which is the one arrangement Tk is
+    safe under.
+    """
+
+    POLL = 200        # ms between drains of the queue
+    MAX_LINES = 2000  # scrollback kept before the oldest lines are dropped
+
+    def __init__(self, parent, root, filename, args=()):
+        self.root = root
+        self.filename = filename
+        self.script = find_beside(filename)
+        self.args = [str(a) for a in args]
+        self.lines = queue.Queue()
+        self.child = None
+        self.reader = None
+        self.stopping = False
+
+        frame = tk.LabelFrame(parent, text=f'  {filename}  ',
+                              font=('Helvetica', 9, 'bold'))
+        frame.pack(side='bottom', fill='x', padx=4, pady=(2, 4))
+        self.frame = frame
+
+        bar = tk.Frame(frame)
+        bar.pack(fill='x')
+        self.status = tk.Label(bar, text='starting', anchor='w',
+                               font=('Helvetica', 8), fg='#003366')
+        self.status.pack(side='left', padx=4)
+        tk.Button(bar, text='Clear', font=('Helvetica', 8),
+                  command=self.clear).pack(side='right', padx=2)
+        tk.Button(bar, text='Restart', font=('Helvetica', 8),
+                  command=self.restart).pack(side='right', padx=2)
+        tk.Button(bar, text='Stop', font=('Helvetica', 8),
+                  command=self.stop).pack(side='right', padx=2)
+
+        body = tk.Frame(frame)
+        body.pack(fill='both', expand=True)
+        self.text = tk.Text(
+            body, width=TERMINAL_COLS, height=TERMINAL_ROWS, wrap='none',
+            font=('Monospace', 9), bg='#101010', fg='#d0d0d0',
+            insertbackground='#d0d0d0', highlightthickness=0, state='disabled',
+        )
+        tvbar = tk.Scrollbar(body, orient='vertical', command=self.text.yview, width=16)
+        thbar = tk.Scrollbar(frame, orient='horizontal', command=self.text.xview)
+        self.text.configure(yscrollcommand=tvbar.set, xscrollcommand=thbar.set)
+        self.text.pack(side='left', fill='both', expand=True)
+        tvbar.pack(side='right', fill='y')
+        thbar.pack(side='bottom', fill='x')
+
+        # The wheel bindings in build_scroll_area are bind_all, so without
+        # these the wheel over the terminal would scroll the controls behind
+        # it instead of the terminal.
+        for sequence, amount in (('<Button-4>', -3), ('<Button-5>', 3)):
+            self.text.bind(sequence, lambda e, n=amount: (self.text.yview_scroll(n, 'units'),
+                                                          'break')[1])
+        self.text.bind('<MouseWheel>',
+                       lambda e: (self.text.yview_scroll(-3 if e.delta > 0 else 3, 'units'),
+                                  'break')[1])
+
+        self.start()
+        self.root.after(self.POLL, self.drain)
+
+    # ---- the child process ----
+
+    def start(self):
+        if self.child and self.child.poll() is None:
+            return
+        self.script = self.script or find_beside(self.filename)
+        if not self.script:
+            self.write(f'{self.filename} was not found next to this file, in '
+                       f'{home_dir()}, or in the working directory.\n')
+            self.status.configure(text='not found', fg='#aa0000')
+            return
+        try:
+            # -u because a pipe makes Python buffer its output in blocks, and
+            # a block of log an hour from now is no use in a window that is
+            # meant to show what is happening.
+            self.child = subprocess.Popen(
+                [sys.executable, '-u', self.script] + self.args,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, cwd=os.path.dirname(self.script) or None,
+            )
+        except OSError as problem:
+            self.write(f'could not start {self.script}: {problem}\n')
+            self.status.configure(text='failed to start', fg='#aa0000')
+            return
+        self.stopping = False
+        self.write(f'--- {os.path.basename(self.script)} started, '
+                   f'pid {self.child.pid} ---\n')
+        self.status.configure(text=f'running, pid {self.child.pid}', fg='#006600')
+        self.reader = threading.Thread(target=self.read_pipe, args=(self.child,),
+                                       daemon=True)
+        self.reader.start()
+
+    def read_pipe(self, child):
+        """The reader thread. It touches the queue and nothing else."""
+        try:
+            for line in child.stdout:
+                self.lines.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                child.stdout.close()
+            except (OSError, ValueError):
+                pass
+            self.lines.put(f'--- exited, status {child.wait()} ---\n')
+
+    def stop(self):
+        if not self.child or self.child.poll() is not None:
+            self.status.configure(text='not running', fg='#555555')
+            return
+        self.stopping = True
+        # Ask first; a scheduler that is mid-write to the camera gets to
+        # finish. Kill only if it ignores the asking.
+        self.child.terminate()
+        try:
+            self.child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.child.kill()
+        self.status.configure(text='stopped', fg='#555555')
+
+    def restart(self):
+        self.stop()
+        self.child = None
+        self.start()
+
+    def clear(self):
+        self.text.configure(state='normal')
+        self.text.delete('1.0', 'end')
+        self.text.configure(state='disabled')
+
+    # ---- the event loop's half ----
+
+    def drain(self):
+        pulled = 0
+        while pulled < 400:
+            try:
+                self.write(self.lines.get_nowait())
+            except queue.Empty:
+                break
+            pulled += 1
+        if self.child and self.child.poll() is not None and not self.stopping:
+            self.status.configure(text=f'exited, status {self.child.returncode}',
+                                  fg='#aa0000')
+        self.root.after(self.POLL, self.drain)
+
+    def write(self, line):
+        # Follow the newest line only when the view is already at the bottom,
+        # so scrolling back to read something does not get yanked away by the
+        # next line arriving.
+        at_bottom = self.text.yview()[1] > 0.999
+        self.text.configure(state='normal')
+        self.text.insert('end', line)
+        extra = int(self.text.index('end-1c').split('.')[0]) - self.MAX_LINES
+        if extra > 0:
+            self.text.delete('1.0', f'{extra + 1}.0')
+        self.text.configure(state='disabled')
+        if at_bottom:
+            self.text.see('end')
+
+    def height_needed(self):
+        self.frame.update_idletasks()
+        return self.frame.winfo_reqheight()
+
+
 class Window:
     def __init__(self, root):
         self.root = root
@@ -188,13 +392,21 @@ class Window:
             font=('Helvetica', 9), fg='#003366',
         ).pack()
 
+        self.terminal = TerminalPane(root, root, TERMINAL_SCRIPT)
         self.build_scroll_area()
         self.build_controls()
         self.build_presets()
         self.build_meter()
         self.size_to_fit()
+        root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.meter:
             root.after(6000, self.meter_tick)
+
+    def on_close(self):
+        """Take the child process with us. Without this the scheduler in the
+        terminal would outlive the window that started it."""
+        self.terminal.stop()
+        self.root.destroy()
 
     # ---- scrolling ----
     #
@@ -206,7 +418,10 @@ class Window:
     def build_scroll_area(self):
         area = tk.Frame(self.root)
         self.canvas = tk.Canvas(area, highlightthickness=0)
-        vbar = tk.Scrollbar(area, orient='vertical', command=self.canvas.yview)
+        # Wide enough to get hold of with the mouse - this is the slider for
+        # the whole window, not an afterthought.
+        vbar = tk.Scrollbar(area, orient='vertical', command=self.canvas.yview,
+                            width=18)
         hbar = tk.Scrollbar(self.root, orient='horizontal', command=self.canvas.xview)
         self.canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
         hbar.pack(side='bottom', fill='x')
@@ -249,7 +464,12 @@ class Window:
         screen will take - which is the whole reason for the scrollbars."""
         self.root.update()
         want_w = min(self.cols.winfo_reqwidth(), int(self.root.winfo_screenwidth() * 0.98))
-        want_h = min(self.cols.winfo_reqheight(), int(self.root.winfo_screenheight() * 0.88))
+        # The terminal is a fixed 15 lines at the bottom, so the scrolling
+        # area gets what is left of the screen rather than the whole of it -
+        # otherwise the window opens taller than the screen and the terminal
+        # is pushed off the bottom edge, which is where it is least useful.
+        room = int(self.root.winfo_screenheight() * 0.88) - self.terminal.height_needed()
+        want_h = min(self.cols.winfo_reqheight(), max(room, 200))
         self.canvas.configure(width=want_w, height=want_h,
                               scrollregion=self.canvas.bbox('all'))
 

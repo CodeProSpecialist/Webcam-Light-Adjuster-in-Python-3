@@ -10,18 +10,18 @@ corrects whichever preset is in force by measuring the picture the camera is
 actually producing. Written for a 1080p HD USB webcam, and it drives two
 different control families, so it suits an older webcam and a current one.
 
-<!-- SCREENSHOT: run it, screenshot the terminal, and save it as
-     docs/screenshot-terminal.png, then delete this comment and the one
-     around the image line below.
+![The control window, with the scheduler running in the terminal along the bottom](docs/screenshot-gui.png)
 
-       mkdir -p docs
-       python3 python3-sunrise-sunset.py          # let it print a few cycles
-       import -window $(xdotool getactivewindow) docs/screenshot-terminal.png
+`webcam_GUI.py`: the camera's controls on the left with a scrollbar down the
+right hand side, the presets and the automatic light adjustment on the right,
+and `python3-sunrise-sunset.py` running in an 80 by 15 terminal along the
+bottom, so the window shows what the schedule is doing and not only what has
+been pressed in it.
 
-     (import is ImageMagick; the Ubuntu screenshot tool saved to the same path
-     works just as well.)
--->
-<!-- ![The scheduler running](docs/screenshot-terminal.png) -->
+*Taken on a machine with no camera attached: the control values are the
+defaults rather than readings from a webcam, and the light meter reports that
+it has no picture to measure. The scheduler in the terminal is really
+running.*
 
 ## Start this before the recording software
 
