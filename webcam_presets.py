@@ -81,12 +81,12 @@ LEGACY = {
     # sensor noise in the dark, which is why the ONN night preset sits at 3 of
     # 7 rather than near maximum; 109 of 255 is the same proportion. Set
     # sharpness back to 250 here if you prefer the old look.
-    'night':      dict(sharpness=109, brightness=175, contrast=223, saturation=64,
+    'night':      dict(sharpness=36, brightness=140, contrast=199, saturation=30,
                        gain=255, exposure=2047, aepri=1,
                        backlight_compensation=0, zoom_absolute=1),
     # Colour noise is most of what makes a dark frame look muddy, so this
     # trades colour for a cleaner, apparently brighter picture.
-    'night_mono': dict(sharpness=72, brightness=175, contrast=223, saturation=0,
+    'night_mono': dict(sharpness=36, brightness=140, contrast=199, saturation=0,
                        gain=255, exposure=2047, aepri=1,
                        backlight_compensation=0, zoom_absolute=1),
     # backlight_compensation used to be left out of the daylight rows entirely.
@@ -124,10 +124,22 @@ MODERN = {
     # contrast well up, so the range is actually used, and the light comes from
     # the aperture priority exposure instead. backlight_compensation is off at
     # night for the same reason: it lifts shadows, which is more of the fog.
-    'night':      dict(sharpness=3, brightness=24, contrast=56, saturation=30,
+    # Retuned again against a second night frame, with the viewer left at 30
+    # fps. At 30 fps the driver caps the exposure near 33 ms, so gain has to
+    # stay at 100 and the sensor noise that comes with it cannot be removed by
+    # any control here - only a longer exposure would do that. What the
+    # controls can still fix is measured on that frame: the 1st percentile sat
+    # at 41 of 255, so the sky never reached black and the whole scene was
+    # veiled grey. brightness is down to 6 to put the floor back on black,
+    # contrast eased to 50 now that the floor is right, saturation down to 14
+    # because chroma noise at gain 100 was casting the tarmac cyan-green, and
+    # sharpness down to 1 because sharpening at this noise level crisps the
+    # grain rather than the subject. Measured after: black point 1 of 255,
+    # noise down by a third, and the car at 60 ft reads as a car.
+    'night':      dict(sharpness=1, brightness=6, contrast=50, saturation=14,
                        gain=100, exposure=5000, aepri=0,
                        backlight_compensation=0, zoom_absolute=0),
-    'night_mono': dict(sharpness=2, brightness=24, contrast=56, saturation=0,
+    'night_mono': dict(sharpness=1, brightness=6, contrast=50, saturation=0,
                        gain=100, exposure=5000, aepri=0,
                        backlight_compensation=0, zoom_absolute=0),
     # Day and Golden AM are the camera's own default light settings, copied
