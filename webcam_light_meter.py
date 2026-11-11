@@ -50,8 +50,8 @@ import time
 # writes, and a loop that acts faster than its own feedback arrives will
 # oscillate - the picture breathes in and out all night instead of settling.
 # Ten seconds of patience is what buys the settling.
-METER_EVERY = 5
-METER_SETTLE = 2
+METER_EVERY = 30
+METER_SETTLE = 1
 
 # What a good picture looks like, as numbers.
 #

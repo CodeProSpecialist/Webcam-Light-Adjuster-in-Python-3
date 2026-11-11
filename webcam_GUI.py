@@ -55,7 +55,7 @@ try:
 except ImportError as problem:                                    # noqa: BLE001
     print(f'automatic light adjustment unavailable: {problem}', file=sys.stderr)
     LightMeter = None
-    METER_SETTLE = 2
+    METER_SETTLE = 1
     LOG_FILE = ''
 
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
@@ -646,13 +646,13 @@ class Window:
                  f'black {cold * 100:.0f}%')
 
     def meter_tick(self):
-        # pass_once only does work every 5 seconds and returns None in between,
+        # pass_once only does work every 30 seconds and returns None in between,
         # so checking every 2 keeps the window responsive and costs nothing.
         if self.meter_on.get():
             line = self.meter.pass_once()
             if line:
                 self.meter_status.configure(text=line)
-        self.root.after(2000, self.meter_tick)
+        self.root.after(5000, self.meter_tick)
 
 
 def main():
