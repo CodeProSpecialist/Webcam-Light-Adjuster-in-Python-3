@@ -609,41 +609,88 @@ whether a vehicle is present and roughly what it is doing. **It is not
 evidence** - a number plate the sensor never captured can come back looking
 sharp and being wrong.
 
-### Retrain it on your own camera
+### It trains itself on your camera, and deletes the brain that shipped here
 
-The brain that ships here was trained on general photographs. One trained on
-daytime stills from *your* camera knows that lens and that sensor, and does
-better. Leave the 24 hour box off, let the picture folder fill through a sunny
-afternoon, copy those stills somewhere, and run:
+The brain in this repository was trained on general photographs. Yours will not
+keep it for long.
 
-```bash
-python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --force
-```
+Every pass of the light meter files the still it just measured into a training
+set at `~/Pictures/webcam-brain-corpus/`, tagged with the preset in force and
+how hard the camera was working. A preset or light change files one
+immediately, which is the point: over a day and a night the set fills up with
+frames from every preset and every light level this camera actually sees. Once
+there is a real spread of them it trains a new brain on them, scores it against
+the shipped brain **on held-back frames from your own camera**, and if the new
+one wins it deletes the shipped brain and never uses it again. After that it
+retrains once a day, so it keeps up with the seasons and with the camera being
+moved.
 
-It writes `~/.webcam-models/brain_g_night_model/`, which is looked at before
-the copy that ships here, scores itself on photos it held back, and makes the
-model read-only when it is done.
+In testing, the brain trained on a camera's own frames scored **17.55 dB
+against the shipped brain's 13.76 dB on the same held-back frames** - which is
+the whole argument for doing this.
 
-### Getting more out of the stacking
+**The one rule that cannot be bent:** only a well-exposed frame can be a
+training target. Training has to know what the right answer looks like, and a
+noisy black frame does not contain it - train with dark frames as the target
+and the brain learns to produce dark frames. So what gets banked as an answer
+sheet is always a frame the camera managed to expose: daylight, dusk, a
+floodlit yard.
 
-Frame averaging is the biggest real win and it is limited by how many stills
-land inside a three minute window. At one snapshot every 30 seconds only about
-six frames are available. If the recording software can be told to write
-snapshots every few seconds instead, the stack gets its full eight frames of
-genuinely the same moment and the night picture improves accordingly.
+What the light changes add, and it is the valuable part, is **real pairs**. The
+camera is bolted down, so a dark frame and a well-exposed frame of the same
+scene a minute apart are a genuine training pair from this sensor - a real
+input with a real answer, no camera model guessed at in between. That happens
+at dusk and dawn and when a light comes on. At three in the morning it does
+not: no preset change makes a pitch-dark yard well exposed, so there is no
+answer to learn from and nothing is banked. Expect real pairs to be a handful,
+not hundreds, and expect the clear daytime frames to do the heavy lifting.
 
-### What it needs
+Nothing is thrown away before its replacement exists. If the new brain scores
+worse than the shipped one, the shipped one is **kept** and the window says so;
+the camera-trained brain is still what gets used, but it will retrain tomorrow
+with more frames behind it.
+
+### When the correction looks wrong
+
+There is a button in the brain tile:
+
+> **delete old brain and restart with new brain**
+>
+> If image is corrected too dark or incorrectly, delete and retrain the machine
+> learning model.
+
+That is the fix when the corrected stills come out too dark, washed out, or the
+colour has gone strange - a trained model can go wrong in ways no score catches,
+and when it does, the brain is what did it. The button deletes the brain and
+trains a fresh one from everything harvested since. It runs in the background,
+so the window keeps working while it does.
+
+The harvested frames are never deleted by it. They are the valuable half: a
+brain can be rebuilt from them in a minute, and the frames cannot be got back
+without waiting another day.
+
+### Which library does what
+
+Both are used, for different halves of the job:
+
+| | does |
+|---|---|
+| **OpenCV** | the foundational processing - decoding the stills, averaging the stack, the LAB conversion and the CLAHE, the box blurs behind the twelve feature planes, the resizing, the denoise. Fixed, rule-based, fast, none of it learnt. |
+| **TensorFlow** | the one part that is learnt - running brain G over those features, and training it. |
+
+Brain G needs both, because the features are OpenCV's work and the brain cannot
+see without them. TensorFlow with no OpenCV falls back to the analytic correct
+rather than half-running a brain.
 
 | | |
 |---|---|
 | nothing | the analytic correct and a contrast stretch, through ImageMagick |
 | ImageMagick 7 | real CLAHE |
-| OpenCV (`pip install opencv-python`) | faster, and true per-tile CLAHE |
-| TensorFlow (`pip install tensorflow-cpu`) | enables brain G |
+| OpenCV (`pip install opencv-python`) | the foundational half: faster, and true per-tile CLAHE |
+| TensorFlow (`pip install tensorflow-cpu`) | the learnt half: brain G, and retraining it on your camera |
 
 Any piece that is missing is named in the brain tile and in the status line,
 and the next tier down does the work instead.
-
 
 ## Files
 

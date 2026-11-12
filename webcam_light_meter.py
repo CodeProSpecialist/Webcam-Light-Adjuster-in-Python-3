@@ -53,6 +53,20 @@ try:
 except ImportError:                                            # noqa: BLE001
     Enhancer = None
 
+# The brain's own module: it owns the harvest that builds a training set out of
+# this camera's frames, and the retraining that uses it. Importing it does not
+# import TensorFlow.
+try:
+    import train_webcam_brain
+except ImportError:                                            # noqa: BLE001
+    train_webcam_brain = None
+
+# How often to file a still into the training set. Every pass would fill the
+# quotas with thirty near-identical frames a minute; two minutes apart gives
+# the light time to have actually changed. A preset or light change overrides
+# this and files one immediately, which is the point of the whole arrangement.
+HARVEST_EVERY = 120
+
 # Measure every 5 seconds, then wait two samples after a correction.
 #
 # Each change takes a moment to reach the next still the camera software
@@ -294,6 +308,10 @@ class LightMeter:
         # so it follows the snapshot setting wherever that is pointed.
         self.enhancer = Enhancer() if Enhancer else None
         self.enhance_note = ''
+        self.last_harvest = 0.0
+        self.harvest_now = True     # file one on the first pass
+        self.harvest_note = ''
+        self.train_note = ''
         # The startup probe. Done here so that simply creating the meter asks
         # the hardware what it can do, before any correction is attempted.
         self.learn_ranges()
@@ -453,6 +471,59 @@ class LightMeter:
         if line:
             log(line)
         return line
+
+    def harvest(self, frame, mean=None):
+        """File this still into the brain's training set, and retrain daily.
+
+        Only well exposed frames become training targets - a dark night frame
+        cannot be its own answer sheet, so one is filed only when a well
+        exposed frame of the same scene turns up within a couple of minutes to
+        be its answer. That happens at dusk and dawn and when a light comes
+        on, which is where the real training pairs come from.
+        """
+        if not train_webcam_brain:
+            return None
+        now = time.time()
+        if not self.harvest_now and now - self.last_harvest < HARVEST_EVERY:
+            return None
+        self.harvest_now = False
+        self.last_harvest = now
+
+        try:
+            kept, why = train_webcam_brain.harvest(
+                frame,
+                preset=train_webcam_brain.current_preset(),
+                gain_fraction=self.gain_fraction(),
+            )
+            self.harvest_note = why
+            if kept:
+                log(f'harvest: {why}')
+        except Exception as problem:                           # noqa: BLE001
+            self.harvest_note = f'harvest failed: {problem}'
+            log(self.harvest_note)
+            return None
+
+        # Retrain on this camera once there is enough, and then once a day.
+        # self_train_if_ready does nothing and returns quickly when it is not
+        # time, so calling it here costs nothing.
+        try:
+            did, line = train_webcam_brain.self_train_if_ready(quiet=True)
+        except Exception as problem:                           # noqa: BLE001
+            self.train_note = f'retrain failed: {problem}'
+            log(self.train_note)
+            return None
+        self.train_note = line
+        if did:
+            log(line, always=True)
+            # The brain on disk has just been replaced, so make the enhancer
+            # drop the one it has loaded and pick up the new one.
+            try:
+                import webcam_enhance                          # noqa: PLC0415
+                webcam_enhance._brain.loaded = None
+            except ImportError:
+                pass
+            return line
+        return None
 
     def sharpness_for(self, gain_now):
         """The sharpness this much gain calls for, in the control's own
@@ -799,6 +870,11 @@ class LightMeter:
                 sharp = self.set_sharpness(have.get('gain'))
                 # A preset just changed the light, so refocus for it as well.
                 self.refocus()
+                # A preset or a hand on a slider just changed the light. This
+                # is exactly the moment worth filing: the scene is the same and
+                # the exposure is different, which is how the training set gets
+                # the camera's own before and after instead of a guess at one.
+                self.harvest_now = True
                 log('learnt new baseline: '
                     + ' '.join(f'{k}={v}' for k, v in sorted(have.items())), always=True)
                 return ('light meter: learnt the current preset as the baseline'
@@ -830,6 +906,12 @@ class LightMeter:
         # is untouched by it - so it happens here, once the frame is in hand
         # and measured, and whatever it says is added to the status line.
         enhanced = self.enhance(frame, mean=mean)
+
+        # File this still into the brain's training set, and retrain on it once
+        # a day. Both are deliberately last and wrapped: they read and write
+        # files and send nothing to the camera, so neither can affect the
+        # correction loop above.
+        self.harvest(frame, mean=mean)
 
         # Median of the last three keeps a passing pair of headlights from
         # dragging the picture darker for the next minute.

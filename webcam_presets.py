@@ -305,6 +305,18 @@ def apply_preset(preset, device='/dev/video0'):
     print(f'{preset} preset on {device} '
           f'({"current" if cam.modern else "legacy"} control names)')
 
+    # Tell the harvest which preset is in force, so that every still it files
+    # from now on is filed under the preset that produced it. That is what
+    # gives the brain training frames from across all the presets and all the
+    # light of a day rather than whatever the camera happened to be doing.
+    # A missing module here changes nothing about applying the preset.
+    try:
+        import train_webcam_brain                             # noqa: PLC0415
+    except ImportError:
+        pass
+    else:
+        train_webcam_brain.note_preset(preset)
+
     # Manual exposure first: on both APIs the exposure value is ignored while
     # auto exposure is on, and the driver needs a moment to switch over.
     cam.set_ctrl(cam.ae_ctrl, AE_MODE)

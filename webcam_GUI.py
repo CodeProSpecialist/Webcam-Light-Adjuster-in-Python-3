@@ -67,6 +67,13 @@ except ImportError as problem:                                    # noqa: BLE001
     print(f'night image enhancement unavailable: {problem}', file=sys.stderr)
     webcam_enhance = None
 
+# The brain's own module: the harvest, the retraining, and the delete-and-start
+# -again that the button in the brain tile calls.
+try:
+    import train_webcam_brain
+except ImportError:                                               # noqa: BLE001
+    train_webcam_brain = None
+
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
 
 _CONTROL_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((int|bool|menu|intmenu)\)', re.I)
@@ -675,6 +682,23 @@ class Window:
         tk.Button(bar, text='Refresh', font=('Helvetica', 8),
                   command=self.refresh_brain_info).pack(side='right', padx=2)
 
+        # Delete and start again. This is here because a trained model can come
+        # out wrong in a way no score catches - too dark, washed out, strange
+        # colour - and then the brain is what did it and the fix is to throw it
+        # away and train another on what has been harvested since. The corpus
+        # of frames is not touched, so nothing is lost that cannot be rebuilt.
+        row = tk.Frame(frame)
+        row.pack(fill='x', padx=4, pady=(2, 0))
+        self.brain_reset_button = tk.Button(
+            row, text='delete old brain and restart with new brain',
+            font=('Helvetica', 8), command=self.on_reset_brain)
+        self.brain_reset_button.pack(side='left')
+        tk.Label(row,
+                 text='If image is corrected too dark or incorrectly, delete '
+                      'and retrain the machine learning model.',
+                 font=('Helvetica', 8), anchor='w', justify='left',
+                 wraplength=420).pack(side='left', padx=6)
+
         # A read-only Text rather than a column of labels: the details run to
         # twenty-odd lines and a Text lays them out in one monospaced block
         # that lines up, without a widget per line.
@@ -696,6 +720,61 @@ class Window:
                        'break')[1])
         self.refresh_brain_info()
 
+    def on_reset_brain(self):
+        """Delete the brain and train a new one from the harvest.
+
+        Training takes a minute or two, and a minute or two of work on the
+        thread running the event loop is a frozen window. So it goes to a
+        worker thread, and the worker only ever puts text on a queue - the
+        event loop drains that queue on a timer and is the only thing that
+        touches a widget, which is the one arrangement Tk is safe under.
+        """
+        if not train_webcam_brain:
+            self.brain_status.configure(
+                text='train_webcam_brain.py is not next to this file')
+            return
+        if getattr(self, 'brain_worker', None) and self.brain_worker.is_alive():
+            return
+
+        self.brain_reset_button.configure(state='disabled')
+        self.brain_status.configure(text='deleting the brain and training a '
+                                         'new one, this takes a minute...')
+        self.brain_lines = queue.Queue()
+
+        def work():
+            try:
+                train_webcam_brain.reset_and_retrain(
+                    report=self.brain_lines.put)
+            except Exception as problem:                      # noqa: BLE001
+                self.brain_lines.put(f'could not retrain: {problem}')
+            finally:
+                self.brain_lines.put(None)       # the done marker
+
+        self.brain_worker = threading.Thread(target=work, daemon=True)
+        self.brain_worker.start()
+        self.root.after(400, self.drain_brain_worker)
+
+    def drain_brain_worker(self):
+        """Show what the worker has said, and tidy up when it has finished."""
+        finished = False
+        while True:
+            try:
+                line = self.brain_lines.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                finished = True
+                break
+            self.brain_status.configure(text=str(line)[:160])
+        if finished:
+            self.brain_reset_button.configure(state='normal')
+            if webcam_enhance:
+                # The brain on disk has changed, so drop the loaded one.
+                webcam_enhance._brain.loaded = None
+            self.refresh_brain_info()
+            return
+        self.root.after(400, self.drain_brain_worker)
+
     def brain_details(self):
         """The status line and the block of detail, as (headline, text)."""
         if not webcam_enhance:
@@ -712,8 +791,7 @@ class Window:
                     'The analytic correct still runs, so the two switches above '
                     'still do something - it works out one gamma from the whole '
                     'frame rather than a gain for every pixel.\n\n'
-                    'To train the brain:\n'
-                    '    python3 train_webcam_brain.py --photos <folder of clear photos>\n')
+                    + self.harvest_section({}))
 
         model, meta, folder = brain
 
@@ -812,16 +890,65 @@ class Window:
                      'never writes to it. To lock it: chmod 444 ' + model_file)
         text += '\n'
 
-        text += 'RETRAIN IT ON THIS CAMERA\n'
-        text += ('  The brain that ships with this was trained on general photographs.\n'
-                 '  One trained on daytime stills from THIS camera knows this lens and\n'
-                 '  this sensor, and does better. Leave the 24 hour switch off, let the\n'
-                 '  picture folder fill through a sunny afternoon, copy those stills\n'
-                 '  somewhere, and run:\n\n'
-                 '    python3 train_webcam_brain.py --photos <that folder> --force\n')
+        text += self.harvest_section(meta)
 
         headline = f'loaded from {folder}'
         return (headline, text)
+
+    def harvest_section(self, meta):
+        """What has been harvested from this camera, and what will happen next.
+
+        The harvest is the part worth watching, because it is what makes the
+        brain this camera's rather than a general one. The corpus is also the
+        valuable half: a model can be deleted and retrained from it in a
+        minute, and the frames cannot be got back without waiting another day.
+        """
+        if not train_webcam_brain:
+            return ('TRAINING ON THIS CAMERA\n'
+                    '  train_webcam_brain.py is not next to this file, so nothing\n'
+                    '  is being harvested and the brain cannot retrain itself.\n')
+        try:
+            state = train_webcam_brain.corpus_state()
+            ready, why = train_webcam_brain.ready_to_train(state)
+        except Exception as problem:                           # noqa: BLE001
+            return f'TRAINING ON THIS CAMERA\n  could not read the harvest: {problem}\n'
+
+        def line(label, value):
+            return f'  {label:<22} {value}\n'
+
+        text = 'TRAINING ON THIS CAMERA\n'
+        text += ('  Every pass files a still into a training set, tagged with the\n'
+                 '  preset and how hard the camera was working, and a preset or light\n'
+                 '  change files one immediately. Once there is a spread across the\n'
+                 '  presets and the day, it retrains on them and deletes the shipped\n'
+                 '  brain. Only well-exposed frames can be training targets: a dark\n'
+                 '  frame cannot be its own answer sheet, so one is kept only when a\n'
+                 '  well-exposed frame of the same scene lands within a couple of\n'
+                 '  minutes to be its answer - dusk, dawn, or a light coming on.\n\n')
+        text += line('trained from', meta.get('trained_from', 'not trained yet'))
+        text += line('well-exposed frames', state['clear_frames'])
+        text += line('dark frames banked', f'{state["dim_frames"]} '
+                                           f'({state["real_pairs"]} with an answer '
+                                           f'beside them)')
+        text += line('preset/light spread', f'{state["bucket_count"]} combinations')
+        text += line('presets seen', ', '.join(state['presets']) or 'none yet')
+        text += line('hours covered', state['hours_covered'])
+        text += line('retrainings so far', state['trainings'])
+        text += line('corpus folder', state['folder'])
+        text += line('next', 'ready to retrain' if ready else why)
+
+        against = meta.get('against_shipped')
+        if isinstance(against, dict):
+            text += '\n  Against the shipped brain, on the same held-back frames\n'
+            text += '  from this camera:\n'
+            text += line('    this camera\'s brain', f'{against.get("own_psnr_db")} dB')
+            text += line('    the shipped brain', f'{against.get("shipped_psnr_db")} dB')
+            text += line('    shipped brain', 'deleted' if against.get('shipped_deleted')
+                         else 'KEPT - the new one scored worse, so it was not thrown '
+                              'away; it will retrain tomorrow')
+        text += ('\n  To train it by hand on a folder of clear photos instead:\n'
+                 '    python3 train_webcam_brain.py --photos <that folder> --force\n')
+        return text
 
     def refresh_brain_info(self):
         """Re-read the brain and redraw the block.

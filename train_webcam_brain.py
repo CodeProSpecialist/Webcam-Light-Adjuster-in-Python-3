@@ -92,11 +92,72 @@ BATCH_SIZE = 512
 # sensor data to lift and the brain would be inventing the whole pixel.
 GAIN_MAX = 12.0
 
+# ---------------------------------------------------------------------------
+# Training on THIS camera
+#
+# The brain that ships with these scripts was trained on general photographs.
+# One trained on frames from this camera knows this lens, this sensor and this
+# scene, and does better - so the scripts harvest their own training set as
+# they run and retrain on it, after which the shipped brain is deleted and only
+# the self-trained one is used.
+#
+# THE ONE RULE THAT CANNOT BE BENT: a dark night frame cannot be its own answer
+# sheet. Training needs to know what the right answer looks like, and a noisy
+# black frame does not contain it - train with dark frames as the target and the
+# brain learns to produce dark frames. So what gets harvested as a TARGET is
+# only ever a well exposed frame: daytime, dusk, a floodlit yard, anything the
+# camera managed to expose properly. Those are what teach it this lens.
+#
+# What the light changes give, and it is the valuable part, is REAL PAIRS. When
+# a preset or a light adjustment fires, the picture changes within a minute or
+# two while the scene stays put - the camera is bolted down. A dark frame and a
+# well exposed frame of the same scene minutes apart are a genuine training
+# pair from this camera: a real input with a real answer, no camera model
+# guessed at in between. Every light change command is a chance at one, which
+# is why the harvest is wired to them and runs around the clock.
+CORPUS_DIR = os.environ.get(
+    'WEBCAM_CORPUS',
+    os.path.join(os.path.expanduser('~'), 'Pictures', 'webcam-brain-corpus'))
+CORPUS_INDEX = os.path.join(CORPUS_DIR, 'corpus.json')
+
+# A well exposed frame, which is what may be a target.
+CLEAR_MEAN_LOW = 70
+CLEAR_MEAN_HIGH = 190
+CLEAR_STD_MIN = 28
+
+# How many frames to keep per bucket, and what a bucket is: the preset in force
+# crossed with how hard the camera was working. Quotas rather than everything,
+# so that a long winter night does not bury one sunny afternoon under ten
+# thousand identical dark frames, and so the corpus stays a bounded size.
+QUOTA_CLEAR = 40
+QUOTA_DIM = 40
+
+# Enough to train on at all. Below this the corpus would teach the brain this
+# one scene and nothing else, which is overfitting, so the shipped brain keeps
+# working until there is a real spread.
+MIN_CLEAR_FRAMES = 24
+MIN_BUCKETS = 3
+
+# A dark frame and a clear frame of the same scene this far apart in time are
+# treated as a real pair. Long enough to catch a preset change settling,
+# short enough that it is still the same night and the same scene.
+PAIR_WINDOW = 150
+
+# Retrain at most this often once it is already trained, so a 24 hour cycle
+# gets folded in but the thing is not retraining every hour.
+RETRAIN_EVERY = 24 * 3600
+
 MODEL_DIR = os.environ.get(
     'WEBCAM_BRAIN_DIR',
     os.path.join(os.path.expanduser('~'), '.webcam-models', 'brain_g_night_model'))
 MODEL_PATH = os.path.join(MODEL_DIR, 'model.keras')
 META_PATH = os.path.join(MODEL_DIR, 'meta.json')
+
+# The brain that ships beside these scripts. It is deleted once a brain trained
+# on this camera is in place and has been shown to be no worse - see
+# retire_shipped_brain.
+SHIPPED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'brain_g_night_model')
 
 # Folders to look in for clear photos when none is given.
 PHOTO_GUESSES = (
@@ -163,6 +224,385 @@ def feature_planes(image):
         black,
     ]
     return np.stack(planes, axis=-1).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# the harvest: building a training set out of this camera's own frames
+# ---------------------------------------------------------------------------
+
+# Which preset is in force, written by whatever applied it and read by the
+# harvest so that every frame is filed under the preset that produced it. A
+# one-line file because the thing that applies a preset and the thing that
+# harvests are usually two different processes.
+LAST_PRESET_FILE = os.environ.get(
+    'WEBCAM_LAST_PRESET',
+    os.path.join(os.path.expanduser('~'), '.webcam-last-preset'))
+
+
+def note_preset(name):
+    """Record the preset just applied. Called by the settings engine."""
+    try:
+        with open(LAST_PRESET_FILE, 'w', encoding='utf-8') as handle:
+            handle.write(f'{name}\n{int(time.time())}\n')
+        return True
+    except OSError:
+        return False
+
+
+def current_preset():
+    """The preset in force, or None."""
+    try:
+        with open(LAST_PRESET_FILE, encoding='utf-8') as handle:
+            name = handle.readline().strip()
+        return name or None
+    except OSError:
+        return None
+
+
+def read_index():
+    """The corpus index: what has been harvested and what it was."""
+    try:
+        with open(CORPUS_INDEX, encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault('frames', [])
+    data.setdefault('last_trained', 0)
+    data.setdefault('trainings', 0)
+    return data
+
+
+def write_index(data):
+    try:
+        os.makedirs(CORPUS_DIR, exist_ok=True)
+        with open(CORPUS_INDEX, 'w', encoding='utf-8') as handle:
+            json.dump(data, handle, indent=1)
+        return True
+    except OSError:
+        return False
+
+
+def measure_frame(path):
+    """Mean, contrast and colourfulness of a frame, or None."""
+    import cv2
+
+    image = cv2.imread(path, cv2.IMREAD_COLOR)
+    if image is None or image.ndim != 3:
+        return None
+    grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return {
+        'mean': round(float(grey.mean()), 2),
+        'std': round(float(grey.std()), 2),
+        'sat': round(float(cv2.cvtColor(image, cv2.COLOR_BGR2HSV)[:, :, 1].mean()), 2),
+        'width': int(image.shape[1]),
+        'height': int(image.shape[0]),
+    }
+
+
+def is_clear(stats):
+    """Whether this frame is well exposed enough to be an answer sheet.
+
+    This is the gate that keeps the whole thing honest. Only a frame that the
+    camera actually managed to expose can say what the right answer looks like.
+    """
+    return (stats is not None
+            and CLEAR_MEAN_LOW <= stats['mean'] <= CLEAR_MEAN_HIGH
+            and stats['std'] >= CLEAR_STD_MIN)
+
+
+def bucket_for(preset, gain_fraction):
+    """Which bucket a frame counts against: the preset in force, crossed with
+    how hard the camera was working.
+
+    Quotas are per bucket so that the corpus ends up spread across the presets
+    and the light levels rather than being whatever happened most often.
+    """
+    preset = (preset or 'unknown').strip().lower().replace(' ', '-')
+    if gain_fraction is None:
+        work = 'gain-unknown'
+    elif gain_fraction <= 0.33:
+        work = 'gain-low'
+    elif gain_fraction <= 0.66:
+        work = 'gain-mid'
+    else:
+        work = 'gain-high'
+    return f'{preset}/{work}'
+
+
+def harvest(frame, preset=None, gain_fraction=None, controls=None, when=None):
+    """Consider one still for the training set. Returns (kept, why).
+
+    Called on every pass of the light meter, and so on every preset and light
+    change - which is the point: the corpus fills up across all of the presets
+    and the whole of a day and a night, rather than being whatever the camera
+    happened to be doing when someone ran the trainer by hand.
+    """
+    import shutil as _shutil
+
+    if not frame or not os.path.isfile(frame):
+        return (False, 'no frame')
+
+    stats = measure_frame(frame)
+    if stats is None:
+        return (False, 'unreadable')
+
+    when = when or time.time()
+    clear = is_clear(stats)
+    kind = 'clear' if clear else 'dim'
+    bucket = bucket_for(preset, gain_fraction)
+    index = read_index()
+
+    # A dim frame is only of use as half of a real pair: a well exposed frame
+    # of this same scene within a couple of minutes, which is its answer. It is
+    # still kept when it arrives unpaired, because the pairing usually happens
+    # the other way round - a light change command BRIGHTENS the picture, so
+    # the dark frame lands first and its answer arrives a minute later. Pairing
+    # is therefore done in both directions: looking back here, and looking back
+    # again from the clear frame below.
+    pair_with = None
+    if not clear:
+        for other in reversed(index['frames']):
+            if other['kind'] != 'clear':
+                continue
+            if abs(other['when'] - when) <= PAIR_WINDOW:
+                pair_with = other['file']
+                break
+
+    quota = QUOTA_CLEAR if clear else QUOTA_DIM
+    have = [f for f in index['frames']
+            if f['kind'] == kind and f['bucket'] == bucket]
+    if len(have) >= quota:
+        # Full: replace the least useful one rather than refusing forever, so
+        # the corpus keeps up with the seasons and with a camera that gets
+        # moved. For clear frames the least useful is the flattest one.
+        if clear:
+            # For an answer sheet the flattest frame is the least useful.
+            have.sort(key=lambda f: f.get('std', 0))
+            worst = have[0]
+            if stats['std'] <= worst.get('std', 0):
+                return (False, f'{bucket} is full of better frames')
+        else:
+            # For a dark frame, an unpaired one is the least useful, then the
+            # oldest - a paired frame is worth keeping whatever its age.
+            have.sort(key=lambda f: (bool(f.get('pair_with')), f['when']))
+            worst = have[0]
+            if worst.get('pair_with') and not pair_with:
+                return (False, f'{bucket} is full of paired frames')
+        try:
+            os.remove(os.path.join(CORPUS_DIR, kind, worst['file']))
+        except OSError:
+            pass
+        index['frames'] = [f for f in index['frames'] if f is not worst]
+
+    folder = os.path.join(CORPUS_DIR, kind)
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        return (False, f'cannot make {folder}')
+
+    name = time.strftime('%Y%m%d-%H%M%S', time.localtime(when)) + \
+        f'-{bucket.replace("/", "-")}.jpg'
+    target = os.path.join(folder, name)
+    extra = 2
+    while os.path.exists(target) and extra < 50:
+        target = os.path.join(folder, name.replace('.jpg', f'-{extra}.jpg'))
+        extra += 1
+    try:
+        _shutil.copy2(frame, target)
+    except OSError as problem:
+        return (False, f'could not copy it in: {problem}')
+
+    record = {
+        'file': os.path.basename(target),
+        'kind': kind,
+        'bucket': bucket,
+        'preset': preset or 'unknown',
+        'gain_fraction': (round(gain_fraction, 3)
+                          if gain_fraction is not None else None),
+        'when': int(when),
+        'pair_with': pair_with,
+    }
+    record.update(stats)
+    if controls:
+        record['controls'] = controls
+    index['frames'].append(record)
+
+    # The other direction: a well exposed frame is the answer to any dark frame
+    # of the same scene that came in just before it. This is the case that
+    # matters, because a preset or light change command brightens the picture -
+    # the dark frame is already banked and this is what it was waiting for.
+    paired_back = 0
+    if clear:
+        for other in index['frames']:
+            if other['kind'] != 'dim' or other.get('pair_with'):
+                continue
+            if abs(other['when'] - when) <= PAIR_WINDOW:
+                other['pair_with'] = record['file']
+                paired_back += 1
+    write_index(index)
+
+    note = f'{kind} frame into {bucket}'
+    if pair_with:
+        note += ' (paired with a well-exposed frame of the same scene)'
+    if paired_back:
+        note += (f' (and it is the answer for {paired_back} dark frame'
+                 f'{"s" if paired_back > 1 else ""} already banked)')
+    return (True, note)
+
+
+def corpus_state():
+    """What is in the training set, for the window and for the decision to
+    retrain."""
+    index = read_index()
+    clear = [f for f in index['frames'] if f['kind'] == 'clear']
+    dim = [f for f in index['frames'] if f['kind'] == 'dim']
+    buckets = sorted({f['bucket'] for f in clear})
+    presets = sorted({f['preset'] for f in index['frames']})
+    span = 0
+    if index['frames']:
+        times = [f['when'] for f in index['frames']]
+        span = max(times) - min(times)
+    return {
+        'clear_frames': len(clear),
+        'dim_frames': len(dim),
+        'real_pairs': len([f for f in dim if f.get('pair_with')]),
+        'buckets': buckets,
+        'bucket_count': len(buckets),
+        'presets': presets,
+        'hours_covered': round(span / 3600.0, 1),
+        'last_trained': index.get('last_trained', 0),
+        'trainings': index.get('trainings', 0),
+        'folder': CORPUS_DIR,
+    }
+
+
+def ready_to_train(state=None):
+    """Whether there is enough of this camera's own light to train on.
+
+    Both tests are about spread rather than volume. A hundred frames of one
+    afternoon from one preset would train a brain that knows that afternoon;
+    what is wanted is frames from across the presets and across the day, which
+    is what the 24 hour harvest is for.
+    """
+    state = state or corpus_state()
+    if state['clear_frames'] < MIN_CLEAR_FRAMES:
+        return (False, f'{state["clear_frames"]} well-exposed frames of '
+                       f'{MIN_CLEAR_FRAMES} needed - they come in as the camera '
+                       f'sees daylight, dusk or a lit scene')
+    if state['bucket_count'] < MIN_BUCKETS:
+        return (False, f'frames from {state["bucket_count"]} preset/light '
+                       f'combinations of {MIN_BUCKETS} needed - let the schedule '
+                       f'run through more of the day')
+    return (True, f'{state["clear_frames"]} well-exposed frames across '
+                  f'{state["bucket_count"]} preset/light combinations, '
+                  f'{state["real_pairs"]} real pairs, '
+                  f'{state["hours_covered"]} hours covered')
+
+
+def corpus_photos(limit=400):
+    """The well exposed frames, as the trainer's photo list."""
+    folder = os.path.join(CORPUS_DIR, 'clear')
+    if not os.path.isdir(folder):
+        return []
+    # want_clear=False: these were already gated by is_clear on the way in,
+    # and re-gating here with the general photo test would throw away frames
+    # of this camera's own scene for being less contrasty than a stock photo.
+    return load_photos(folder, limit=limit, want_clear=False)
+
+
+def corpus_pairs(limit=200):
+    """The real pairs: a dark frame from this camera with a well exposed frame
+    of the same scene, as (dark, clear) float images.
+
+    This is the part no synthetic camera model can provide - the actual noise,
+    the actual lens, the actual sodium-lit scene, with the actual answer.
+    """
+    import cv2
+
+    index = read_index()
+    by_name = {f['file']: f for f in index['frames']}
+    pairs = []
+    for record in index['frames']:
+        if record['kind'] != 'dim' or not record.get('pair_with'):
+            continue
+        clear_record = by_name.get(record['pair_with'])
+        if not clear_record:
+            continue
+        dark_path = os.path.join(CORPUS_DIR, 'dim', record['file'])
+        clear_path = os.path.join(CORPUS_DIR, 'clear', clear_record['file'])
+        if not (os.path.isfile(dark_path) and os.path.isfile(clear_path)):
+            continue
+        dark = cv2.imread(dark_path, cv2.IMREAD_COLOR)
+        clear = cv2.imread(clear_path, cv2.IMREAD_COLOR)
+        if dark is None or clear is None or dark.shape != clear.shape:
+            continue
+        pairs.append((dark.astype('float32') / 255.0,
+                      clear.astype('float32') / 255.0))
+        if len(pairs) >= limit:
+            break
+    return pairs
+
+
+def make_pair_samples(pairs, count, rng, crop=128):
+    """Samples from real pairs: features off the real dark frame, targets from
+    the real well exposed one."""
+    import numpy as np
+
+    features = np.zeros((count, BRAIN_G_FEATURES), dtype=np.float32)
+    targets = np.zeros((count, 2), dtype=np.float32)
+    filled = 0
+    while filled < count and pairs:
+        dark, clear = pairs[int(rng.integers(len(pairs)))]
+        height, width = dark.shape[:2]
+        size = min(crop, height, width)
+        top = int(rng.integers(0, height - size + 1))
+        left = int(rng.integers(0, width - size + 1))
+        dark_crop = dark[top:top + size, left:left + size]
+        clear_crop = clear[top:top + size, left:left + size]
+
+        planes = feature_planes(dark_crop)
+        answers = targets_for(dark_crop, clear_crop)
+        take = min(256, count - filled)
+        ys = rng.integers(0, size, take)
+        xs = rng.integers(0, size, take)
+        features[filled:filled + take] = planes[ys, xs]
+        targets[filled:filled + take] = answers[ys, xs]
+        filled += take
+    return features[:filled], targets[:filled]
+
+
+def retire_shipped_brain():
+    """Delete the brain that shipped with these scripts.
+
+    Only ever called once a brain trained on this camera is saved and has been
+    checked, which is the whole condition: nothing is thrown away until
+    something better is in place.
+    """
+    if not os.path.isdir(SHIPPED_DIR):
+        return (False, 'no shipped brain to delete')
+    if not os.path.isfile(MODEL_PATH):
+        return (False, 'refusing to delete it - there is no self-trained brain yet')
+    removed = []
+    for name in ('model.keras', 'meta.json'):
+        path = os.path.join(SHIPPED_DIR, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+            removed.append(name)
+        except OSError as problem:
+            return (False, f'could not delete {path}: {problem}')
+    try:
+        os.rmdir(SHIPPED_DIR)
+    except OSError:
+        pass
+    return (True, f'deleted the shipped brain from {SHIPPED_DIR} '
+                  f'({", ".join(removed)}) - only the brain trained on this '
+                  f'camera is used now')
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +982,8 @@ def make_read_only(path):
         return False
 
 
-def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False):
+def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
+          use_corpus=False):
     import numpy as np
 
     def say(line):
@@ -553,16 +994,28 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False)
         say(f'{MODEL_PATH} is already there. --force to retrain over it.')
         return 0
 
-    folders = [photo_folder] if photo_folder else list(PHOTO_GUESSES)
     photos = []
     used = ''
-    for folder in folders:
-        if not folder or not os.path.isdir(folder):
-            continue
-        photos = load_photos(folder)
-        if len(photos) >= 4:
-            used = folder
-            break
+    pairs = []
+    trained_from = 'general photos'
+
+    if use_corpus:
+        # This camera's own frames, harvested as the scripts ran.
+        photos = corpus_photos()
+        used = os.path.join(CORPUS_DIR, 'clear')
+        pairs = corpus_pairs()
+        trained_from = 'this camera'
+        say(f'brain G: training on THIS CAMERA - {len(photos)} well-exposed '
+            f'frames and {len(pairs)} real dark/clear pairs from {CORPUS_DIR}')
+    else:
+        folders = [photo_folder] if photo_folder else list(PHOTO_GUESSES)
+        for folder in folders:
+            if not folder or not os.path.isdir(folder):
+                continue
+            photos = load_photos(folder)
+            if len(photos) >= 4:
+                used = folder
+                break
 
     if len(photos) < 4:
         print('Not enough clear photos to train on. Point --photos at a folder '
@@ -585,8 +1038,33 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False)
     val_count = max(2048, samples // 5)
     say(f'brain G: building {val_count} validation samples')
     x_val, y_val, _ = make_samples(val_photos, val_count, rng)
+
+    # The real pairs go in alongside the synthetic ones, and some are held
+    # back. They are worth more per sample than anything synthetic - real
+    # noise from this sensor with a real answer beside it - but there are
+    # never many, so they supplement rather than replace.
+    pair_note = 'none'
+    if pairs:
+        cut = max(1, int(len(pairs) * 0.25))
+        val_pairs, train_pairs = pairs[:cut], pairs[cut:]
+        if train_pairs:
+            want = min(samples // 3, len(train_pairs) * 1024)
+            px, py = make_pair_samples(train_pairs, want, rng)
+            if len(px):
+                x_train = np.concatenate([x_train, px])
+                y_train = np.concatenate([y_train, py])
+        if val_pairs:
+            vx, vy = make_pair_samples(val_pairs, max(1024, val_count // 4), rng)
+            if len(vx):
+                x_val = np.concatenate([x_val, vx])
+                y_val = np.concatenate([y_val, vy])
+        pair_note = (f'{len(train_pairs)} pairs trained on, {len(val_pairs)} '
+                     f'held back')
+        say(f'brain G: real pairs from this camera - {pair_note}')
+
     say(f'brain G: samples built in {time.time() - started:.0f}s, '
-        f'stack depths used {sorted(set(stacks))}')
+        f'{len(x_train)} training samples, stack depths used '
+        f'{sorted(set(stacks))}')
 
     from tensorflow import keras
     model = build_brain()
@@ -653,6 +1131,9 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False)
         'tensorflow': __import__('tensorflow').__version__,
         'read_only': True,
         'evaluation': scored,
+        'trained_from': trained_from,
+        'real_pairs': pair_note,
+        'corpus': corpus_state() if use_corpus else None,
     }
     with open(META_PATH, 'w', encoding='utf-8') as handle:
         json.dump(meta, handle, indent=2)
@@ -668,7 +1149,209 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False)
         f'(a flat answer scores {baseline:.5f}), val mae {val_mae:.4f}')
     say(f'brain G: saved {MODEL_PATH} read-only, sha256 '
         f'{meta["model_sha256"][:16]}...')
+
+    # Left for the caller, so self_train_if_ready can score the shipped brain
+    # on exactly the same held-back frames before deciding anything.
+    train.last = {'val_photos': val_photos, 'meta': meta, 'model': model,
+                  'rng': rng}
     return 0
+
+
+def delete_brain(folder):
+    """Delete a brain folder. Returns (deleted, note)."""
+    model = os.path.join(folder, 'model.keras')
+    if not os.path.exists(model):
+        return (False, f'nothing to delete in {folder}')
+    gone = []
+    for name in ('model.keras', 'meta.json'):
+        path = os.path.join(folder, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
+        try:
+            os.remove(path)
+            gone.append(name)
+        except OSError as problem:
+            return (False, f'could not delete {path}: {problem}')
+    try:
+        os.rmdir(folder)
+    except OSError:
+        pass
+    return (True, f'deleted {", ".join(gone)} from {folder}')
+
+
+def reset_and_retrain(quiet=False, report=None):
+    """Throw the current brain away and train a fresh one from the harvest.
+
+    This is the button in the window, and it exists because a trained model can
+    come out wrong in a way no score catches - if the corrected stills are too
+    dark, or washed out, or the colour has gone strange, the brain is what did
+    it and the fix is to delete it and train again on what has been harvested
+    since.
+
+    It deletes BOTH brains: the one trained on this camera and the shipped one
+    if it is still there. Then it trains a new one from the corpus. Nothing is
+    lost that cannot be rebuilt - the corpus of harvested frames is untouched,
+    and it is the corpus, not the model, that is the valuable part.
+
+    If there is not yet enough harvested to train on, it says so and leaves
+    the analytic correct doing the work until there is. That is a real state
+    and not a failure: the correction still runs, one tier down.
+
+    Returns (trained, line).
+    """
+    def say(text):
+        if report:
+            report(text)
+        elif not quiet:
+            print(text, flush=True)
+
+    # Delete the brain trained on this camera - the one that has been doing
+    # the correcting, and so the one that produced the bad pictures. The
+    # shipped brain, if it is still here, is deliberately NOT deleted yet: it
+    # is the benchmark the new one has to beat, and it is also what keeps the
+    # correction working if there turns out not to be enough harvested to
+    # train on. self_train_if_ready retires it in the usual way once the new
+    # brain is shown to be better.
+    notes = []
+    done, note = delete_brain(MODEL_DIR)
+    if done:
+        notes.append(note)
+        say(note)
+    else:
+        say('brain G: there was no brain trained on this camera to delete')
+
+    # Let it train again right away rather than waiting out the 24 hour gap.
+    index = read_index()
+    index['last_trained'] = 0
+    write_index(index)
+
+    state = corpus_state()
+    ready, why = ready_to_train(state)
+    if not ready:
+        shipped = os.path.isfile(os.path.join(SHIPPED_DIR, 'model.keras'))
+        line = ('brain G: deleted. Not enough harvested to train a new one yet '
+                f'- {why}. '
+                + ('The shipped brain is doing the correcting in the meantime.'
+                   if shipped else
+                   'The analytic correct is doing the work until then.')
+                + ' The harvest carries on and it will train itself as soon as '
+                  'it has enough.')
+        say(line)
+        return (False, line)
+
+    say('brain G: training a fresh brain on this camera...')
+    did, line = self_train_if_ready(force=True, quiet=quiet)
+    if notes:
+        line = '; '.join(notes) + '. ' + line
+    say(line)
+    return (did, line)
+
+
+def self_train_if_ready(force=False, quiet=False):
+    """Retrain on this camera's own frames, and retire the shipped brain.
+
+    This is what the light meter calls. It does nothing at all until the
+    harvest has a real spread of this camera's well exposed frames, because a
+    brain trained on one afternoon of one preset would be worse than the
+    shipped one, not better.
+
+    When it does train, the new brain is compared with the shipped one on the
+    SAME held-back frames from this camera - which is the only comparison that
+    answers the question being asked, since the two were trained on different
+    material and their own training scores cannot be read against each other.
+    The shipped brain is deleted once the new one is no worse. If the new one
+    comes out worse, it is still what gets used - it is the one trained on
+    this camera - but the shipped copy is kept and said so, loudly, rather
+    than being thrown away on a bad training run.
+
+    Returns (did_train, line).
+    """
+    state = corpus_state()
+    ready, why = ready_to_train(state)
+    if not ready:
+        return (False, f'brain G: not retraining yet - {why}')
+
+    index = read_index()
+    last = index.get('last_trained', 0)
+    if last and not force and time.time() - last < RETRAIN_EVERY:
+        hours = (RETRAIN_EVERY - (time.time() - last)) / 3600.0
+        return (False, f'brain G: trained on this camera already, next retrain '
+                       f'in {hours:.1f}h ({state["clear_frames"]} frames banked)')
+
+    had_shipped = os.path.isfile(os.path.join(SHIPPED_DIR, 'model.keras'))
+    outcome = train(force=True, quiet=quiet, use_corpus=True)
+    if outcome != 0 or not train.last:
+        return (False, 'brain G: training on this camera did not complete')
+
+    details = train.last
+    new_meta = details['meta']
+    new_score = (new_meta.get('evaluation') or {}).get('brain_psnr_db')
+
+    # Score the shipped brain on the same held-back frames from this camera.
+    shipped_score = None
+    if had_shipped:
+        try:
+            os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
+            from tensorflow import keras                      # noqa: PLC0415
+            shipped = keras.models.load_model(
+                os.path.join(SHIPPED_DIR, 'model.keras'), compile=False)
+            shipped_eval = evaluate(shipped, details['val_photos'],
+                                    details['rng'])
+            shipped_score = shipped_eval.get('brain_psnr_db')
+        except Exception:                                     # noqa: BLE001
+            shipped_score = None
+
+    index = read_index()
+    index['last_trained'] = int(time.time())
+    index['trainings'] = index.get('trainings', 0) + 1
+    write_index(index)
+
+    line = (f'brain G: retrained on this camera - {state["clear_frames"]} '
+            f'well-exposed frames, {state["real_pairs"]} real pairs, '
+            f'{state["bucket_count"]} preset/light combinations')
+    if isinstance(new_score, (int, float)):
+        line += f'; scores {new_score:.2f} dB on its own held-back frames'
+
+    # Record the comparison where the window can show it.
+    verdict = None
+    if isinstance(new_score, (int, float)) and isinstance(shipped_score, (int, float)):
+        verdict = {'own_psnr_db': new_score, 'shipped_psnr_db': shipped_score,
+                   'own_is_better': new_score >= shipped_score - 0.05}
+        line += f' against the shipped brain\'s {shipped_score:.2f} dB on the same frames'
+
+    if verdict is None or verdict['own_is_better']:
+        done, note = retire_shipped_brain()
+        line += f'. {note}' if done else ''
+        if verdict is not None:
+            verdict['shipped_deleted'] = bool(done)
+    else:
+        line += ('. The shipped brain scored better on these frames, so it has '
+                 'NOT been deleted - the brain trained on this camera is still '
+                 'the one being used, but there is probably not enough variety '
+                 'in the harvest yet. It will retrain tomorrow.')
+        if verdict is not None:
+            verdict['shipped_deleted'] = False
+
+    if verdict is not None:
+        try:
+            os.chmod(META_PATH, 0o644)
+            with open(META_PATH, encoding='utf-8') as handle:
+                stored = json.load(handle)
+            stored['against_shipped'] = verdict
+            with open(META_PATH, 'w', encoding='utf-8') as handle:
+                json.dump(stored, handle, indent=2)
+            make_read_only(META_PATH)
+        except (OSError, ValueError):
+            pass
+
+    return (True, line)
+
+
+train.last = {}
 
 
 def main():
@@ -680,7 +1363,49 @@ def main():
     parser.add_argument('--samples', type=int, default=PRETRAIN_SAMPLES,
                         help=f'pretrain samples (default {PRETRAIN_SAMPLES})')
     parser.add_argument('--quiet', action='store_true')
+    parser.add_argument('--self-train', action='store_true',
+                        help="train on this camera's harvested frames and "
+                             'retire the shipped brain')
+    parser.add_argument('--harvest', metavar='FRAME',
+                        help='consider one still for the training set')
+    parser.add_argument('--preset', help='the preset in force, for --harvest')
+    parser.add_argument('--gain-fraction', type=float,
+                        help='0 to 1, how hard the camera is working, for --harvest')
+    parser.add_argument('--corpus-state', action='store_true',
+                        help='what has been harvested so far')
+    parser.add_argument('--reset-retrain', action='store_true',
+                        help='delete the current brain and train a new one '
+                             'from the harvest')
     args = parser.parse_args()
+
+    if args.corpus_state:
+        state = corpus_state()
+        ready, why = ready_to_train(state)
+        print(f'corpus: {state["clear_frames"]} well-exposed frames, '
+              f'{state["dim_frames"]} dark ({state["real_pairs"]} paired), '
+              f'{state["bucket_count"]} preset/light combinations, '
+              f'{state["hours_covered"]}h covered, in {state["folder"]}')
+        print('presets seen: ' + (', '.join(state['presets']) or 'none'))
+        print(('ready to train: ' if ready else 'not ready: ') + why)
+        return 0
+
+    if args.harvest:
+        kept, why = harvest(args.harvest, preset=args.preset,
+                            gain_fraction=args.gain_fraction)
+        print(('harvested: ' if kept else 'not harvested: ') + why)
+        return 0
+
+    if args.reset_retrain:
+        did, line = reset_and_retrain(quiet=args.quiet)
+        if args.quiet:
+            print(line)
+        return 0 if did else 1
+
+    if args.self_train:
+        did, line = self_train_if_ready(force=args.force, quiet=args.quiet)
+        print(line)
+        return 0 if did else 1
+
     return train(photo_folder=args.photos, force=args.force,
                  samples=min(args.samples, PRETRAIN_CAP), quiet=args.quiet)
 

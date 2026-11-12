@@ -59,9 +59,20 @@ Both switches live in one small file, ~/.webcam-enhance.conf, so that the
 window and the scheduler agree about them - tick the box in the window and the
 scheduler running under cron picks it up on its next pass.
 
+WHICH LIBRARY DOES WHAT
+
+OpenCV does the foundational processing: decoding the stills, averaging the
+stack, the LAB conversion and the CLAHE, the box blurs behind the twelve
+feature planes, the resizing, the denoise. Fixed, rule-based, fast, and none
+of it learnt. TensorFlow does only the part that is learnt - running brain G
+over those features. Brain G therefore needs both, since the features are
+OpenCV's work; with TensorFlow but no OpenCV the analytic correct runs
+instead of half a brain. ImageMagick is the fallback for the OpenCV half on a
+machine without it, and is weaker on exactly the frames that need it most.
+
     sudo apt-get -y install imagemagick
-    python3 -m pip install opencv-python numpy      # optional: better and faster
-    python3 -m pip install tensorflow-cpu           # optional: enables brain G
+    python3 -m pip install opencv-python numpy      # the foundational half
+    python3 -m pip install tensorflow-cpu           # the learnt half, brain G
     python3 webcam_enhance.py --test                # correct the newest snapshot
 """
 
@@ -732,18 +743,35 @@ class Enhancer:
         return f'enhance: {os.path.basename(written)} [{why}] {how}'
 
     def report(self):
-        """One line for the window saying what is doing the work, so a missing
-        piece shows before it is needed rather than as a silent lack of
-        improvement."""
-        parts = ['OpenCV' if _cv2() else 'ImageMagick only (no OpenCV)']
+        """One line for the window saying which library is doing what, so a
+        missing piece shows before it is needed rather than as a silent lack
+        of improvement.
+
+        The two do different jobs and both are wanted. OpenCV does the
+        foundational work - decoding the stills, averaging the stack, the LAB
+        conversion and the CLAHE, the box blurs behind the twelve feature
+        planes, the resizing and the denoise. All of it is fixed, rule-based
+        and fast, and none of it is learnt. TensorFlow does only the one thing
+        that is learnt: running brain G over those features. So brain G needs
+        both - the features are OpenCV's work and the brain cannot see without
+        them - which is why a machine with TensorFlow but no OpenCV falls back
+        to the analytic correct rather than half-running the brain.
+        """
+        if _cv2():
+            parts = ['OpenCV doing the stacking, CLAHE and the features']
+        else:
+            parts = ['ImageMagick doing the stacking and the stretch '
+                     '(no OpenCV, so no brain either)']
         brain = _brain()
         if brain is not None:
             _model, meta, folder = brain
             trained = meta.get('trained_at', 'unknown date')
-            photos = meta.get('photos_trained_on', '?')
-            parts.append(f'brain G from {folder} ({photos} photos, {trained})')
+            source = meta.get('trained_from', 'general photos')
+            parts.append(f'TensorFlow running brain G from {folder} '
+                         f'(trained on {source}, {trained})')
         else:
-            parts.append(f'analytic correct - {_brain.why or "no brain"}')
+            parts.append(f'analytic correct instead of a brain - '
+                         f'{_brain.why or "no brain"}')
         return 'enhancement: ' + ', '.join(parts)
 
 
