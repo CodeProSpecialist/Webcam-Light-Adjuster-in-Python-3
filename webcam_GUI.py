@@ -1351,6 +1351,9 @@ class Window:
         legend.pack(fill='x', pady=(2, 0))
         tk.Label(legend, text='boxes:', font=('Helvetica', 8),
                  fg='#333333').pack(side='left')
+        tk.Button(legend, text='Original image, full size',
+                  font=('Helvetica', 8),
+                  command=self.open_original_window).pack(side='right', padx=2)
         for label, colour, _bgr in (webcam_status.LEGEND if webcam_status
                                     else []):
             tk.Label(legend, text=f'  {label}  ', font=('Helvetica', 8, 'bold'),
@@ -1484,6 +1487,9 @@ class Window:
                             width=thumb['width'], height=thumb['height'])
             shown += 1
 
+        # The separate window, when it is open, follows the same frames.
+        self.refresh_original_window()
+
         note = webcam_status.compare_note()
         if shown:
             self.compare_note.configure(
@@ -1528,6 +1534,99 @@ class Window:
             pass
         finally:
             self.root.after(COMPARE_POLL_MS, self.poll_compare_frames)
+
+# ---- the untouched frame, in a window of its own ----
+
+    def open_original_window(self):
+        """A second window showing nothing but the frame as the camera gave
+        it, as large as it will go.
+
+        The grid shows the original at a sixth of the tile, which is enough
+        to see that the correction did something and not enough to see what
+        the camera actually sees. That is a different question - whether
+        there is anything in the raw frame at all, or whether the exposure
+        needs changing rather than the correction - and it needs the picture
+        big and on its own, with nothing lifted, stacked or drawn on it.
+
+        Opened once: asking again raises the window that is already there
+        rather than stacking a second one on top of it.
+        """
+        existing = getattr(self, 'original_window', None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            self.refresh_original_window()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title('The original frame, before any correction')
+        self.original_window = window
+
+        bar = tk.Frame(window)
+        bar.pack(fill='x', padx=6, pady=4)
+        self.original_note = tk.Label(
+            bar, text='', font=('Helvetica', 9), anchor='w', fg='#003366',
+            justify='left')
+        self.original_note.pack(side='left', fill='x', expand=True)
+        tk.Button(bar, text='Refresh', font=('Helvetica', 8),
+                  command=self.refresh_original_window).pack(side='right',
+                                                             padx=2)
+        tk.Button(bar, text='Close', font=('Helvetica', 8),
+                  command=window.destroy).pack(side='right', padx=2)
+
+        self.original_label = tk.Label(window, text='(nothing corrected yet)',
+                                       bg='#101010', fg='#888888',
+                                       font=('Helvetica', 10))
+        self.original_label.pack(fill='both', expand=True, padx=6, pady=(0, 6))
+        self.refresh_original_window()
+
+    def refresh_original_window(self):
+        """Reload the untouched frame into that window, if it is open.
+
+        Called by its own button and by every pass of the comparison
+        refresh, so the window follows the camera rather than freezing on
+        whatever was there when it opened.
+        """
+        window = getattr(self, 'original_window', None)
+        if window is None or not window.winfo_exists():
+            return
+        if webcam_status is None:
+            self.original_label.configure(image='', text='webcam_status.py '
+                                                         'is not here')
+            return
+        # As wide as the screen will take, less a margin, and never so small
+        # that it is no better than the tile.
+        try:
+            width = max(480, min(1400, self.root.winfo_screenwidth() - 160))
+        except Exception:                                      # noqa: BLE001
+            width = 900
+        try:
+            big = webcam_status.original_thumb(width)
+        except Exception as problem:                           # noqa: BLE001
+            self.original_label.configure(
+                image='', text=f'could not read the original: {problem}',
+                fg='#aa0000')
+            return
+        if not big['path']:
+            self.original_label.configure(
+                image='', text='(no frame has been corrected yet - the '
+                               'original is written at the same time as the '
+                               'corrected copy)', fg='#888888')
+            return
+        try:
+            picture = tk.PhotoImage(file=big['path'])
+        except Exception as problem:                           # noqa: BLE001
+            self.original_label.configure(
+                image='', text=f'(unreadable: {problem})', fg='#aa0000')
+            return
+        # Held on the instance or tkinter garbage collects it and the label
+        # goes blank - the usual PhotoImage trap.
+        self.original_image = picture
+        self.original_label.configure(image=picture, text='')
+        self.original_note.configure(
+            text=f"straight from the camera, no stacking, no CLAHE, no brain "
+                 f"G, nothing drawn on it - {big['width']}x{big['height']} "
+                 f"shown, from {os.path.basename(big['source'])}")
 
     # ---- the error log ----
 

@@ -66,13 +66,45 @@ def _enhance():
 
 
 def compare_dir():
-    """Where the enhancer puts the comparison frames: beside the corrected
-    stills, so they are pruned and backed up with everything else rather than
-    living in /tmp where a reboot takes them."""
+    """Where the enhancer put the comparison frames.
+
+    Read from the pointer the enhancer writes, not worked out. The enhancer
+    takes its folder from the frame it is handed - the light meter builds one
+    with no folder at all - so asking a fresh Enhancer() where the output goes
+    answers None, and the old guess at ~/Pictures/webcam sent the window
+    looking in a folder nothing had ever been written to. That is why the
+    pictures stayed empty while the correction was working perfectly.
+
+    The guesses are still here, after the pointer, for the first run before
+    anything has been corrected yet.
+    """
     enhance = _enhance()
+    pointer = getattr(enhance, 'COMPARE_POINTER', '') if enhance else ''
+    if pointer:
+        try:
+            with open(pointer, encoding='utf-8') as fh:
+                written = fh.read().strip()
+            if written and os.path.isdir(written):
+                return written
+        except OSError:
+            pass
     if enhance is not None:
         try:
-            return os.path.join(enhance.Enhancer().out_dir(), COMPARE_DIR_NAME)
+            out = enhance.Enhancer().out_dir()
+            if out:
+                return os.path.join(out, COMPARE_DIR_NAME)
+        except Exception:                                     # noqa: BLE001
+            pass
+        # The folder the test run and the scheduler default to.
+        try:
+            sample = os.environ.get(
+                'WEBCAM_SNAPSHOT',
+                os.path.join(os.path.expanduser('~'), 'Pictures',
+                             'webcam-sample-images'))
+            candidate = os.path.join(sample, enhance.ENH_DIR_NAME,
+                                     COMPARE_DIR_NAME)
+            if os.path.isdir(candidate):
+                return candidate
         except Exception:                                     # noqa: BLE001
             pass
     return os.path.join(os.path.expanduser('~'), 'Pictures', 'webcam',
@@ -272,6 +304,26 @@ def thumbnails(total_width=760, folder=None):
     return out
 
 
+def original_thumb(width=900, folder=None):
+    """The untouched frame on its own, bigger, for the window that shows
+    nothing but it.
+
+    Same frame as the top-left of the grid - `raw.jpg`, exactly as the camera
+    gave it, before the stack, the CLAHE, brain G or anything else - just
+    scaled to whatever that window can give it rather than to a sixth of the
+    tile. This is the one to look at when the question is how dark the camera
+    really sees, which the corrected frames cannot answer.
+    """
+    folder = folder or compare_dir()
+    source = os.path.join(folder, 'raw.jpg')
+    if not os.path.exists(source):
+        return {'path': '', 'width': 0, 'height': 0, 'source': ''}
+    target = os.path.join(folder, 'thumbs', f'orig-{int(width)}-raw.ppm')
+    made_width, height = _write_thumb(source, target, int(width))
+    return {'path': target if made_width else '', 'width': made_width,
+            'height': height, 'source': source}
+
+
 def compare_note(folder=None):
     """The line the enhancer left saying what it did and what it found."""
     folder = folder or compare_dir()
@@ -324,6 +376,12 @@ def main():
               'note': compare_note()}
     if '--no-thumbs' not in args:
         report['thumbs'] = thumbnails(width)
+    if '--original' in args:
+        try:
+            big = int(args[args.index('--original') + 1])
+        except (IndexError, ValueError):
+            big = 900
+        report['original'] = original_thumb(big)
     if '--json' in args:
         print(json.dumps(report))
         return
@@ -336,6 +394,10 @@ def main():
                 row['name'], 1 if row['ok'] else 0, row['version'],
                 row['detail'].replace('|', '/'),
                 row['hint'].replace('|', '/')))
+        if report.get('original'):
+            big = report['original']
+            print('ORIGINAL|{}|{}|{}'.format(
+                big['path'], big['width'], big['height']))
         for thumb in report.get('thumbs', []):
             print('THUMB|{}|{}|{}|{}|{}'.format(
                 thumb['name'], thumb['caption'].replace('|', '/'),

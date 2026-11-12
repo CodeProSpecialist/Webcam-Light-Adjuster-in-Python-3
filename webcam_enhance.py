@@ -136,6 +136,13 @@ STACK_WINDOW = 180
 ENH_KEEP = 30
 ENH_DIR_NAME = 'enhanced'
 
+# Where the last set of comparison frames was written. One line, one path,
+# rewritten every pass - see save_comparison for why this exists.
+COMPARE_POINTER = os.environ.get(
+    'WEBCAM_COMPARE_POINTER',
+    os.path.join(os.path.expanduser('~'), '.webcam-compare-dir'))
+
+
 # What counts as night when there is no gain reading to judge by.
 #
 # Gain is the better test and is what the light meter already uses - a camera
@@ -906,6 +913,21 @@ class Enhancer:
             except Exception as problem:                      # noqa: BLE001
                 _oops('compare.write', problem, detail=f'{name} not written')
                 continue
+
+        # Where these went, written to one fixed place.
+        #
+        # This is the only reliable way for the window to find them. The
+        # enhancer takes its folder from the frame it is given - the light
+        # meter constructs Enhancer() with no folder at all and passes the
+        # path per frame - so asking a fresh Enhancer() where the output goes
+        # returns nothing, and anything else is a guess at a folder the user
+        # may well have moved. The producer knows; so the producer writes it
+        # down and the window reads it.
+        try:
+            with open(COMPARE_POINTER, 'w', encoding='utf-8') as fh:
+                fh.write(target + '\n')
+        except OSError:
+            pass
 
         # A line saying what was done and what was found, so the window has
         # something to print under the pictures without redoing the work.
