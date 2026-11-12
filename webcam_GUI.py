@@ -406,6 +406,13 @@ class Window:
             getattr(webcam_enhance, 'KEY_ALL_DAY', ''), False)))
         self.enh_detect = tk.BooleanVar(value=bool(saved.get(
             getattr(webcam_enhance, 'KEY_DETECT', ''), False)))
+        # Where the brain trains from. The picture folder defaults to on, for
+        # the reason read_settings gives: a conf file written before these two
+        # switches existed should not silently mean "never train".
+        self.train_pics = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_TRAIN_PICTURES', ''), True)))
+        self.train_cam = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_TRAIN_CAMERA', ''), False)))
 
         root.title('Webcam Settings')
         tk.Label(root, text='Webcam Controls', font=('Helvetica', 13, 'bold')).pack(pady=4)
@@ -701,6 +708,58 @@ class Window:
                  font=('Helvetica', 8), anchor='w', justify='left',
                  wraplength=420).pack(side='left', padx=6)
 
+        # ---- where the brain trains from ----
+        #
+        # Two boxes rather than one, because the two sources are not equivalent
+        # and on this machine only one of them is usually available. The
+        # picture folder is always there: the light meter has been filling it
+        # with frames of the real scene in the real light, which is exactly
+        # what makes this brain better than a general one. The camera is the
+        # better source in principle - frames straight off the sensor, no JPEG
+        # round trip - and is only possible while nothing else holds the
+        # device, which on a machine that is recording is rarely.
+        #
+        # Ticking a box trains from it now and leaves it selected, so the
+        # automatic retrain uses the same source. The Perl window and the
+        # scheduler read the same conf file, so a box ticked here means the
+        # same thing to all three.
+        train = tk.LabelFrame(frame, text='  where the brain trains from  ',
+                              font=('Helvetica', 9, 'bold'))
+        train.pack(fill='x', padx=4, pady=(4, 2))
+        # The meter owns the snapshot folder, so the box shows whatever it is
+        # actually set to rather than a path written in here.
+        snaps = getattr(self.meter, 'snapshot', None) if self.meter else None
+        if not snaps:
+            snaps = os.path.expanduser('~/Pictures/webcam-sample-images')
+        tk.Checkbutton(train, text=f'train brain from {snaps}',
+                       variable=self.train_pics, font=('Helvetica', 8), anchor='w',
+                       command=lambda: self.on_train_toggle('pictures')
+                       ).pack(fill='x', padx=6)
+        tk.Checkbutton(train, text='train brain direct from the detected webcamera',
+                       variable=self.train_cam, font=('Helvetica', 8), anchor='w',
+                       command=lambda: self.on_train_toggle('camera')
+                       ).pack(fill='x', padx=6)
+
+        train_row = tk.Frame(train)
+        train_row.pack(fill='x', padx=6, pady=2)
+        self.brain_train_button = tk.Button(
+            train_row, text='Train now from the ticked sources',
+            font=('Helvetica', 8), command=self.on_train_now)
+        self.brain_train_button.pack(side='left')
+        self.train_status = tk.Label(train_row, text=self.train_summary(),
+                                     font=('Helvetica', 8), anchor='w',
+                                     justify='left', wraplength=360, fg='#003366')
+        self.train_status.pack(side='left', padx=6)
+
+        tk.Label(train, anchor='w', justify='left', font=('Helvetica', 8),
+                 wraplength=420, fg='#555555',
+                 text=('The camera box can only work while nothing else has the '
+                       'camera: a V4L2 device lets one program stream at a time, '
+                       'so while the recording software is running it is held and '
+                       'the picture folder is the source that is actually '
+                       'available. The box says who has it rather than failing '
+                       'quietly.')).pack(fill='x', padx=6, pady=(0, 2))
+
         # A read-only Text rather than a column of labels: the details run to
         # twenty-odd lines and a Text lays them out in one monospaced block
         # that lines up, without a widget per line.
@@ -721,6 +780,107 @@ class Window:
             lambda e: (self.brain_text.yview_scroll(-3 if e.delta > 0 else 3, 'units'),
                        'break')[1])
         self.refresh_brain_info()
+
+    def train_summary(self):
+        """One line saying what the two boxes add up to."""
+        if not webcam_enhance:
+            return 'no enhancement module, so there is nothing to train'
+        if not self.train_pics.get() and not self.train_cam.get():
+            return 'Both boxes off - the brain is not being trained.'
+        where = []
+        if self.train_cam.get():
+            where.append('the camera')
+        if self.train_pics.get():
+            where.append('the picture folder')
+        return 'Training from ' + ' and then '.join(where) + '.'
+
+    def on_train_toggle(self, which):
+        """A box was ticked or unticked.
+
+        Write it out so the Perl window and the scheduler agree, then - when it
+        was just ticked - train from it, because ticking it is the instruction
+        and waiting until tomorrow's automatic retrain to act on it would look
+        like the box did nothing. Unticking one is an instruction to stop using
+        that source, so nothing is started on the way out.
+        """
+        if not webcam_enhance:
+            self.train_status.configure(
+                text='webcam_enhance.py is not here, so there is nothing to train')
+            return
+        ok = webcam_enhance.write_settings(train_pictures=self.train_pics.get(),
+                                           train_camera=self.train_cam.get())
+        text = self.train_summary()
+        if not ok:
+            text += f' (could not write {webcam_enhance.CONF_FILE})'
+        self.train_status.configure(text=text)
+
+        turned_on = self.train_cam.get() if which == 'camera' else self.train_pics.get()
+        if turned_on:
+            self.on_train_now()
+
+    def on_train_now(self):
+        """Train from whichever boxes are ticked.
+
+        On a worker thread that only ever puts text on a queue, the same
+        arrangement the reset button uses and for the same reason: training
+        takes a minute or two and a minute or two on the thread running the
+        event loop is a window that has stopped repainting. The camera burst
+        happens on the worker too, since it is a couple of seconds of ffmpeg.
+        """
+        if not webcam_enhance or not train_webcam_brain:
+            self.train_status.configure(
+                text='train_webcam_brain.py is not next to this file')
+            return
+        if getattr(self, 'brain_worker', None) and self.brain_worker.is_alive():
+            return
+        if not self.train_pics.get() and not self.train_cam.get():
+            self.train_status.configure(
+                text='Neither box is ticked, so there is nothing to train from.')
+            return
+
+        device = DEVICE
+        folder = None
+        if self.meter is not None:
+            try:
+                folder = self.meter.snap_dir()
+            except Exception:                                 # noqa: BLE001
+                folder = None
+        if not folder:
+            folder = os.path.expanduser('~/Pictures/webcam-sample-images')
+
+        self.brain_reset_button.configure(state='disabled')
+        self.brain_train_button.configure(state='disabled')
+        self.train_status.configure(text='Looking for frames to train from...')
+        self.brain_lines = queue.Queue()
+
+        def work():
+            try:
+                sources, note = webcam_enhance.training_sources(device=device,
+                                                                folder=folder)
+                if note:
+                    self.brain_lines.put(note)
+                if not sources:
+                    self.brain_lines.put(note or 'nothing to train from')
+                    return
+                # One run per source, in order, so a folder that fails does not
+                # take the other one down with it.
+                for label, path in sources:
+                    self.brain_lines.put(f'training from {label}: {path}')
+                    try:
+                        train_webcam_brain.train(photo_folder=path, force=True,
+                                                 quiet=True)
+                        self.brain_lines.put(f'trained from {label}')
+                    except Exception as problem:              # noqa: BLE001
+                        self.brain_lines.put(
+                            f'could not train from {label}: {problem}')
+            except Exception as problem:                      # noqa: BLE001
+                self.brain_lines.put(f'could not train: {problem}')
+            finally:
+                self.brain_lines.put(None)       # the done marker
+
+        self.brain_worker = threading.Thread(target=work, daemon=True)
+        self.brain_worker.start()
+        self.root.after(400, self.drain_brain_worker)
 
     def on_reset_brain(self):
         """Delete the brain and train a new one from the harvest.
@@ -770,6 +930,10 @@ class Window:
             self.brain_status.configure(text=str(line)[:160])
         if finished:
             self.brain_reset_button.configure(state='normal')
+            if getattr(self, 'brain_train_button', None):
+                self.brain_train_button.configure(state='normal')
+            if getattr(self, 'train_status', None):
+                self.train_status.configure(text=self.train_summary())
             if webcam_enhance:
                 # The brain on disk has changed, so drop the loaded one.
                 webcam_enhance._brain.loaded = None
