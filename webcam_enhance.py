@@ -96,6 +96,10 @@ CONF_FILE = os.environ.get(
 
 KEY_NIGHT = 'night_clahe_ml'
 KEY_ALL_DAY = 'all_day_clahe_ml'
+# Find the car or the person and aim a second, stronger correction at them.
+# Independent of the two above: it only does anything on a frame that is being
+# corrected at all, because the detector needs the correction to see.
+KEY_DETECT = 'detect_and_boost'
 
 # How many consecutive stills to average, and how old the oldest of them may
 # be. The window matters: stills from twenty minutes apart are two different
@@ -141,6 +145,27 @@ BRAIN_SMOOTH = 9        # box blur on the gain map, in pixels
 # work. It also smooths the map, which is wanted anyway: a gain that varied
 # pixel by pixel would amplify the very noise this is trying to see past.
 BRAIN_SCALE = 0.5
+
+
+def _detector():
+    """The object detector, loaded once, or None.
+
+    Kept behind a function for the same reason the brain is: it is an extra on
+    top of a correction that has to keep working whether or not it is there.
+    """
+    if _detector.found is None:
+        _detector.found = False
+        try:
+            import webcam_detect                              # noqa: PLC0415
+        except ImportError:
+            return None
+        detector = webcam_detect.Detector()
+        if detector.ready():
+            _detector.found = detector
+    return _detector.found or None
+
+
+_detector.found = None
 
 
 def _brain_module():
@@ -251,7 +276,7 @@ _brain.why = ''
 def read_settings():
     """The two switches, as they stand on disk. Both off when there is no
     file - which is how this behaved before it existed."""
-    settings = {KEY_NIGHT: False, KEY_ALL_DAY: False}
+    settings = {KEY_NIGHT: False, KEY_ALL_DAY: False, KEY_DETECT: False}
     try:
         with open(CONF_FILE, encoding='utf-8') as handle:
             for line in handle:
@@ -266,18 +291,21 @@ def read_settings():
     return settings
 
 
-def write_settings(night=None, all_day=None):
-    """Change one or both switches, leaving the other as it was."""
+def write_settings(night=None, all_day=None, detect=None):
+    """Change any of the switches, leaving the others as they were."""
     settings = read_settings()
     if night is not None:
         settings[KEY_NIGHT] = bool(night)
     if all_day is not None:
         settings[KEY_ALL_DAY] = bool(all_day)
+    if detect is not None:
+        settings[KEY_DETECT] = bool(detect)
     try:
         with open(CONF_FILE, 'w', encoding='utf-8') as handle:
             handle.write('# Written by the webcam settings window. Two switches:\n')
             handle.write('#   night image CLAHE and ML auto correct\n')
             handle.write('#   24 hour image CLAHE and ML auto correct\n')
+            handle.write('#   find cars and people and enhance them\n')
             for key, value in settings.items():
                 handle.write(f'{key}={1 if value else 0}\n')
     except OSError:
@@ -350,6 +378,7 @@ class Enhancer:
     def __init__(self, folder=None):
         self.folder = folder
         self.note = ''
+        self.detections = []
         self.last_output = ''
         self.tiers = ''
 
@@ -494,12 +523,55 @@ class Enhancer:
             result = self._analytic_lift(result)
             done.append('auto correct (analytic)')
 
-        # A light denoise last. The stack has already taken most of the noise
-        # out; this cleans up what the lifting brought back up with it, and is
-        # gentle enough not to wipe the texture off the scene.
-        if len(images) < 4:
-            result = cv2.fastNlMeansDenoisingColored(result, None, 3, 3, 7, 21)
-            done.append('denoise')
+        # Denoise last, AFTER the lift rather than before it.
+        #
+        # This is the right order and it took looking at the output to see why.
+        # Lifting a dark frame eighteen-fold lifts its noise with it, and the
+        # worst of what comes up is chroma: single pixels that were a shade off
+        # neutral in the dark frame become vivid red and green speckle in the
+        # lifted one. Denoising before the lift cannot help, because at that
+        # point the speckle is still below one count and invisible.
+        #
+        # The strength follows how hard the frame was lifted - a frame that
+        # barely moved needs nothing - and the chroma is cleaned far harder
+        # than the luma, because that is where the damage is and because luma
+        # is where the detail is. Wiping the luma would undo the sharpening
+        # and the CLAHE that came before it.
+        lifted_by = float(numpy.mean(result.astype(numpy.float32) + 1.0) /
+                          max(float(numpy.mean(stacked.astype(numpy.float32))), 1.0))
+        if lifted_by > 1.6 or len(images) < 4:
+            # h for luma, hColor for the colour channels.
+            luma_strength = 3 if len(images) >= 4 else 5
+            chroma_strength = int(min(18, 6 + 4 * lifted_by))
+            result = cv2.fastNlMeansDenoisingColored(
+                result, None, luma_strength, chroma_strength, 7, 21)
+            done.append(f'denoise (chroma {chroma_strength})')
+
+        # 4. find the car or the person, and give them a second, stronger
+        # lift of their own.
+        #
+        # This runs LAST, on the corrected frame, and that order is the whole
+        # trick: a detector looking at the raw night frame sees a black
+        # rectangle and finds nothing in it, while the same detector on the
+        # corrected frame finds what is actually there. Measured on a night
+        # frame: nothing at all before the correction, three people and two
+        # vehicles after it.
+        self.detections = []
+        if read_settings().get(KEY_DETECT):
+            detector = _detector()
+            if detector is None:
+                done.append('detector not available')
+            else:
+                boxes = detector.detect(result)
+                self.detections = boxes
+                if boxes:
+                    result = detector.boost(result, boxes)
+                    done.append(f'found and boosted {detector.summary(boxes)}')
+                    folder = os.path.dirname(out_path)
+                    detector.crops(result, boxes,
+                                   os.path.join(folder, 'detections'))
+                else:
+                    done.append('nothing found to boost')
 
         cv2.imwrite(out_path, result, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         return out_path, ', '.join(done)
@@ -772,6 +844,9 @@ class Enhancer:
         else:
             parts.append(f'analytic correct instead of a brain - '
                          f'{_brain.why or "no brain"}')
+        detector = _detector()
+        if detector is not None:
+            parts.append('OpenCV finding cars and people')
         return 'enhancement: ' + ', '.join(parts)
 
 

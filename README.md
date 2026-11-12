@@ -10,7 +10,11 @@ corrects whichever preset is in force by measuring the picture the camera is
 actually producing. Written for a 1080p HD USB webcam, and it drives two
 different control families, so it suits an older webcam and a current one.
 
-![The control window, with the scheduler running in the terminal along the bottom](docs/screenshot-gui.png)
+![The control window: camera controls and presets, then the scheduler's terminal, then brain G's tile, all on one scrolling page](docs/screenshot-gui.png)
+
+The window is one tall page - camera controls and presets at the top, the
+scheduler's terminal below them, and brain G's tile under that - scrolled by the
+bar down the right hand side.
 
 `webcam_GUI.py`: the camera's controls on the left with a scrollbar down the
 right hand side, the presets and the automatic light adjustment on the right,
@@ -521,6 +525,8 @@ always did.
 
 ## Night image correction: stacking, CLAHE and brain G
 
+![One dark frame, then stacked, then CLAHE, then brain G](docs/night-correction.png)
+
 This is the part of the picture that no camera control can reach, and it is
 switched on with the two boxes in the window:
 
@@ -652,6 +658,8 @@ with more frames behind it.
 
 ### When the correction looks wrong
 
+![The brain G tile, with the delete-and-retrain button](docs/screenshot-brain-tile.png)
+
 There is a button in the brain tile:
 
 > **delete old brain and restart with new brain**
@@ -692,6 +700,55 @@ rather than half-running a brain.
 Any piece that is missing is named in the brain tile and in the status line,
 and the next tier down does the work instead.
 
+## Finding cars and people
+
+![What the detector finds, before and after the correction](docs/finding-cars-and-people.png)
+
+The third box, **find cars and people and enhance them**, runs an object
+detector over the corrected still, and then gives whatever it found a second,
+stronger lift of its own - a gain and a CLAHE run on that region alone, feathered
+at the edges so it does not show up as a bright rectangle drawn on the picture.
+A close crop of each thing found is written to a `detections` folder, which is
+what you actually want to look at in the morning: the car, rather than the yard
+with the car in the corner of it.
+
+**The order is the whole trick.** Detection runs *after* the correction, not
+before. A detector looking at a raw night frame sees an almost uniform black
+rectangle and finds nothing in it, because there is no contrast for it to work
+with. The same detector on the frame after stacking, CLAHE and brain G has
+something to see. Measured on the same night frame:
+
+| | what the detector finds |
+|---|---|
+| the raw night frame | **nothing at all** |
+| after the correction | **1 car, 3 people** (best confidence 0.73) |
+
+The detector is NanoDet-Plus-m from the OpenCV Model Zoo, run through
+`cv2.dnn` - a real detector trained on COCO, not a shape heuristic. It returns a
+class and a confidence. Of its eighty classes these scripts use six: **person,
+bicycle, car, motorcycle, bus, truck**. It is a 3.8 MB file in `detector/`,
+Apache 2.0, licence included beside it, and it needs no GPU and no network.
+Nothing here runs code from it - it is weights, and the decoding of its output
+is written out in `webcam_detect.py`.
+
+Two honest limits:
+
+* It works on what is actually visible. A car across a lit or part-lit yard is a
+  reasonable target; the same car on a moonless night with no light at all is
+  not, because the correction can only amplify what the sensor recorded. When it
+  finds nothing you get the ordinary whole-frame correction, which is what you
+  would have had anyway.
+* A detection is the detector's opinion about a picture that is itself partly
+  guessed. Read a box as "something that looks like a car is probably there",
+  not as proof of one.
+
+You can run it by hand on any still:
+
+```bash
+python3 webcam_detect.py some-snapshot.jpg --save
+```
+
+
 ## Files
 
 | File | What it is |
@@ -714,3 +771,5 @@ and the next tier down does the work instead.
 | `train_webcam_brain.py` | brain G: the model, the frozen foundation, and its trainer |
 | `brain_g_night_model/` | the trained brain that ships here, and its `meta.json` |
 | `~/.webcam-enhance.conf` | the two correction switches, shared with the scheduler |
+| `webcam_detect.py` | finding cars and people, and aiming the correction at them |
+| `detector/` | the NanoDet object detector (Apache 2.0) and its licence |

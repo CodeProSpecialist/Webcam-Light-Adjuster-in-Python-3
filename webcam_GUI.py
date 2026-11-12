@@ -404,6 +404,8 @@ class Window:
             getattr(webcam_enhance, 'KEY_NIGHT', ''), False)))
         self.enh_all_day = tk.BooleanVar(value=bool(saved.get(
             getattr(webcam_enhance, 'KEY_ALL_DAY', ''), False)))
+        self.enh_detect = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_DETECT', ''), False)))
 
         root.title('Webcam Settings')
         tk.Label(root, text='Webcam Controls', font=('Helvetica', 13, 'bold')).pack(pady=4)
@@ -1015,6 +1017,9 @@ class Window:
         tk.Checkbutton(boxes, text='24 hour image CLAHE and ML auto correct',
                        variable=self.enh_all_day, font=('Helvetica', 8), anchor='w',
                        command=self.on_enhance_toggle).pack(fill='x')
+        tk.Checkbutton(boxes, text='find cars and people and enhance them',
+                       variable=self.enh_detect, font=('Helvetica', 8), anchor='w',
+                       command=self.on_enhance_toggle).pack(fill='x')
 
         tk.Label(self.right, anchor='w', justify='left', font=('Helvetica', 8),
                  wraplength=310, fg='#555555',
@@ -1022,7 +1027,12 @@ class Window:
                        'which is the same test the sharpness uses for night - a floodlit '
                        'yard at midnight does not get it and an overcast dusk does. The '
                        'second runs it on every still around the clock and overrides the '
-                       'first.'),
+                       'first.\n\n'
+                       'The third looks for cars and people in the corrected still and '
+                       'gives them a second, stronger lift of their own, saving a close '
+                       'crop of each into an "detections" folder. It runs after the '
+                       'correction on purpose: a detector sees nothing in a raw night '
+                       'frame, and finds what is there once the frame has been lifted.'),
                  ).pack(fill='x', padx=6)
 
         tk.Label(self.right, text=self.enhancer_report(), anchor='w', justify='left',
@@ -1047,15 +1057,21 @@ class Window:
 
     def enhance_summary(self):
         if self.enh_all_day.get():
-            return 'Correcting every snapshot, around the clock.'
-        if self.enh_night.get():
-            return 'Correcting snapshots once the gain says it is dark.'
-        return 'Image correction off - the snapshots are left as the camera wrote them.'
+            line = 'Correcting every snapshot, around the clock.'
+        elif self.enh_night.get():
+            line = 'Correcting snapshots once the gain says it is dark.'
+        else:
+            return ('Image correction off - the snapshots are left as the camera '
+                    'wrote them.')
+        if self.enh_detect.get():
+            line += ' Cars and people get a second lift and a crop of their own.'
+        return line
 
     def on_enhance_toggle(self):
         """Write both switches out, so the scheduler sees the change too."""
         ok = webcam_enhance.write_settings(night=self.enh_night.get(),
-                                           all_day=self.enh_all_day.get())
+                                           all_day=self.enh_all_day.get(),
+                                           detect=self.enh_detect.get())
         text = self.enhance_summary()
         if not ok:
             text += f' (could not write {webcam_enhance.CONF_FILE})'
@@ -1085,6 +1101,7 @@ class Window:
             self.enh_status.configure(
                 text=f'Wrote {os.path.basename(written)} in '
                      f'{os.path.dirname(written)} - {how}')
+            self.refresh_brain_info()
         else:
             self.enh_status.configure(text=f'Could not correct it: {how}')
 
