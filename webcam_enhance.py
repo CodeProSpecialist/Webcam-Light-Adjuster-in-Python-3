@@ -284,6 +284,8 @@ def _brain():
             model = keras.models.load_model(model_path, compile=False)
         except Exception as problem:                          # noqa: BLE001
             _brain.why = f'could not load the brain: {problem}'
+            _oops('brain G.load', problem,
+                  detail=f'from {folder} - TensorFlow may be the problem')
             continue
 
         _brain.loaded = (model, meta, folder)
@@ -549,6 +551,26 @@ def _magick_has_clahe():
 _magick_has_clahe.answer = None
 
 
+# Every handler in here says what went wrong through this, so an OpenCV,
+# TensorFlow or brain G failure shows up in the window's terminal pane rather
+# than only as a frame that quietly did not get corrected.
+try:
+    import webcam_errors
+except ImportError:                                               # noqa: BLE001
+    webcam_errors = None
+
+
+def _oops(where, problem=None, detail='', once_key=''):
+    """Report a failure and carry on. A no-op if webcam_errors.py was
+    deleted, because the correction working matters more than the log."""
+    if webcam_errors is None:
+        return
+    if once_key:
+        webcam_errors.once(once_key, where, detail or str(problem))
+    else:
+        webcam_errors.report(where, problem, detail=detail)
+
+
 def _cv2():
     """OpenCV, if it is installed. Everything here works without it, through
     ImageMagick; with it, the work is done in one process on arrays rather
@@ -558,8 +580,13 @@ def _cv2():
         try:
             import cv2                                        # noqa: PLC0415
             import numpy                                      # noqa: PLC0415
-        except ImportError:
+        except ImportError as problem:
             _cv2.module = False
+            _oops('OpenCV.import', detail=(
+                f'OpenCV is not usable ({problem}) - correcting with '
+                'ImageMagick instead, which has no brain G and no detector. '
+                'conda install -c conda-forge opencv'),
+                once_key='no-cv2')
         else:
             _cv2.module = (cv2, numpy)
     return _cv2.module or None
@@ -693,22 +720,47 @@ class Enhancer:
         if not images:
             return '', 'nothing readable to enhance'
 
+        # The first readable frame, untouched, as the "before" of the top row.
+        # The stack below is already a correction of a kind, so comparing
+        # against it would understate what the correction did.
+        first_frame = images[0].astype(numpy.uint8)
+
         # 1. the average
-        stacked = images[0] if len(images) == 1 else \
-            numpy.mean(numpy.stack(images, axis=0), axis=0)
-        stacked = numpy.clip(stacked, 0, 255).astype(numpy.uint8)
-        done = [f'stacked {len(images)}']
+        try:
+            stacked = images[0] if len(images) == 1 else \
+                numpy.mean(numpy.stack(images, axis=0), axis=0)
+            stacked = numpy.clip(stacked, 0, 255).astype(numpy.uint8)
+            done = [f'stacked {len(images)}']
+        except Exception as problem:                          # noqa: BLE001
+            # Nearly always a frame that changed shape mid-stack, which the
+            # filter above should have caught. Fall back to the single newest
+            # frame rather than giving up on the correction entirely.
+            _oops('night correction.stacking', problem,
+                  detail=f'could not average {len(images)} frames - '
+                         'using the newest one alone')
+            stacked = numpy.clip(images[0], 0, 255).astype(numpy.uint8)
+            done = ['stack failed, single frame']
 
         # 2. CLAHE on lightness only, so the colour is left where it is. Run
         # on L of LAB rather than on the three channels separately, which
         # would pull the colour balance about tile by tile.
-        lab = cv2.cvtColor(stacked, cv2.COLOR_BGR2LAB)
-        light, green_red, blue_yellow = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP,
-                                tileGridSize=(CLAHE_TILES, CLAHE_TILES))
-        lab = cv2.merge((clahe.apply(light), green_red, blue_yellow))
-        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        done.append('CLAHE')
+        try:
+            lab = cv2.cvtColor(stacked, cv2.COLOR_BGR2LAB)
+            light, green_red, blue_yellow = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP,
+                                    tileGridSize=(CLAHE_TILES, CLAHE_TILES))
+            lab = cv2.merge((clahe.apply(light), green_red, blue_yellow))
+            result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            done.append('CLAHE')
+        except Exception as problem:                          # noqa: BLE001
+            # The local contrast stage - the one that pulls detail out of the
+            # shadows a tile at a time. Without it the frame still gets the
+            # lift, it just stays flat, so say so loudly and carry on.
+            _oops('night correction.CLAHE', problem,
+                  detail=f'clip {CLAHE_CLIP}, {CLAHE_TILES}x{CLAHE_TILES} '
+                         'tiles - frame left without local contrast')
+            result = stacked
+            done.append('CLAHE failed')
 
         # 3. the auto correct, by brain G when it is there
         brain = _brain()
@@ -744,9 +796,18 @@ class Enhancer:
             # h for luma, hColor for the colour channels.
             luma_strength = 3 if len(images) >= 4 else 5
             chroma_strength = int(min(18, 6 + 4 * lifted_by))
-            result = cv2.fastNlMeansDenoisingColored(
-                result, None, luma_strength, chroma_strength, 7, 21)
-            done.append(f'denoise (chroma {chroma_strength})')
+            try:
+                result = cv2.fastNlMeansDenoisingColored(
+                    result, None, luma_strength, chroma_strength, 7, 21)
+                done.append(f'denoise (chroma {chroma_strength})')
+            except Exception as problem:                      # noqa: BLE001
+                # Present in the main OpenCV build but not in every slimmed
+                # down one, and it is the stage most worth naming when it
+                # goes: without it a hard lift keeps its colour speckle.
+                _oops('night correction.denoise', problem,
+                      detail='frame kept undenoised - expect colour speckle '
+                             'on a hard lift', once_key='denoise')
+                done.append('denoise unavailable')
 
         # 4. find the car or the person, and give them a second, stronger
         # lift of their own.
@@ -757,7 +818,15 @@ class Enhancer:
         # corrected frame finds what is actually there. Measured on a night
         # frame: nothing at all before the correction, three people and two
         # vehicles after it.
+        # The corrected frame as it stands before anything is picked out of
+        # it. Kept because it is the "before" of the second comparison: the
+        # window shows the correction on the top row and what the detector
+        # then did on the row under it, and the two share this frame.
+        pre_boost = result.copy()
+
         self.detections = []
+        boxes = []
+        detector = None
         if read_settings().get(KEY_DETECT):
             detector = _detector()
             if detector is None:
@@ -775,7 +844,74 @@ class Enhancer:
                     done.append('nothing found to boost')
 
         cv2.imwrite(out_path, result, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+
+        # The four frames the window compares, written last so that a failure
+        # in here cannot cost us the corrected still itself.
+        self.save_comparison(os.path.dirname(out_path), first_frame, pre_boost,
+                             result, boxes, detector, ', '.join(done))
         return out_path, ', '.join(done)
+
+    def save_comparison(self, folder, raw, corrected, boosted, boxes,
+                        detector, note=''):
+        """Write the four frames the tile at the bottom of the window shows.
+
+        Top row is the correction - the frame as the camera gave it, then the
+        same frame stacked, CLAHE'd and lifted by brain G. Bottom row is the
+        enhancement that runs on top of that - the corrected frame again,
+        then the frame with the car or the person found in it and given a
+        second lift of their own.
+
+        The boxes are drawn on this last copy and on nothing else. The
+        corrected still that gets kept has no boxes on it, deliberately: a
+        rectangle drawn across a number plate is worse than no rectangle, and
+        this copy exists to be looked at rather than to be evidence.
+        """
+        if not folder:
+            return ''
+        cv2, _numpy = _cv2()
+        target = os.path.join(folder, 'compare')
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError:
+            return ''
+
+        drawn = boosted
+        if boxes and detector is not None:
+            try:
+                drawn = detector.draw(boosted, boxes)
+            except Exception as problem:                      # noqa: BLE001
+                _oops('compare.draw', problem,
+                      detail='boxes not drawn on the comparison frame')
+                drawn = boosted
+
+        quality = [int(cv2.IMWRITE_JPEG_QUALITY), 88]
+        written = []
+        for name, frame in (('raw.jpg', raw),
+                            ('corrected.jpg', corrected),
+                            ('boost-before.jpg', corrected),
+                            ('boost-after.jpg', drawn)):
+            if frame is None:
+                continue
+            try:
+                if cv2.imwrite(os.path.join(target, name), frame, quality):
+                    written.append(name)
+            except Exception as problem:                      # noqa: BLE001
+                _oops('compare.write', problem, detail=f'{name} not written')
+                continue
+
+        # A line saying what was done and what was found, so the window has
+        # something to print under the pictures without redoing the work.
+        try:
+            found = 'nothing found'
+            if boxes and detector is not None:
+                found = detector.summary(boxes)
+            when = time.strftime('%Y-%m-%d %H:%M:%S')
+            with open(os.path.join(target, 'compare.txt'), 'w',
+                      encoding='utf-8') as fh:
+                fh.write(f'{when}  {found}\n{note}\n')
+        except OSError:
+            pass
+        return target if written else ''
 
     def _brain_lift(self, brain, image):
         """Run brain G over the frame and apply what it asks for.
@@ -839,7 +975,10 @@ class Enhancer:
             # the saturation together.
             out = luma * gain + (work - luma) * gain * saturation
             return numpy.clip(out * 255.0, 0, 255).astype(numpy.uint8)
-        except Exception:                                     # noqa: BLE001
+        except Exception as problem:                          # noqa: BLE001
+            _oops('brain G.predict', problem, detail=(
+                'the brain would not run on this frame - falling back to the '
+                'analytic correct'))
             return None
 
     def _analytic_lift(self, image):

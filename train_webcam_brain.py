@@ -738,6 +738,27 @@ def unit_names():
             'GLOBAL_DARK_SCENE']
 
 
+def _keras():
+    """keras, or a reported failure. TensorFlow installed-but-broken is the
+    usual way this falls over - a numpy clash, or a conda build next to a pip
+    one - and from inside a training run it looks like an unrelated crash, so
+    the failure is written down here where the cause is still in view."""
+    os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
+    try:
+        from tensorflow import keras                           # noqa: PLC0415
+    except Exception as problem:                               # noqa: BLE001
+        try:
+            import webcam_errors                               # noqa: PLC0415
+            webcam_errors.report('TensorFlow.import', problem, detail=(
+                'brain G cannot be built or trained without a working '
+                'TensorFlow - the correction falls back to the analytic '
+                'lift until this is fixed.  pip install tensorflow'))
+        except ImportError:
+            pass
+        raise
+    return keras
+
+
 def build_brain():
     """12 -> 9 FROZEN, then the 9 and the raw 12 together -> 24 -> 16 -> 2.
 
@@ -760,8 +781,7 @@ def build_brain():
     net several times its size, so the hand-weighted detectors are genuinely
     adding information rather than just constraining the fit.
     """
-    os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
-    from tensorflow import keras
+    keras = _keras()
 
     weights, bias = foundation_weights()
     pixel = keras.layers.Input(shape=(BRAIN_G_FEATURES,), name='pixel_features')
@@ -1066,7 +1086,7 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         f'{len(x_train)} training samples, stack depths used '
         f'{sorted(set(stacks))}')
 
-    from tensorflow import keras
+    keras = _keras()
     model = build_brain()
     say('brain G: 12 -> 9 FROZEN + raw 12 -> 24 -> 16 -> 2, foundation units: '
         + ', '.join(unit_names()))
@@ -1295,8 +1315,7 @@ def self_train_if_ready(force=False, quiet=False):
     shipped_score = None
     if had_shipped:
         try:
-            os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
-            from tensorflow import keras                      # noqa: PLC0415
+            keras = _keras()
             shipped = keras.models.load_model(
                 os.path.join(SHIPPED_DIR, 'model.keras'), compile=False)
             shipped_eval = evaluate(shipped, details['val_photos'],
@@ -1355,6 +1374,14 @@ train.last = {}
 
 
 def main():
+    # Anything that gets all the way out of the training run lands in the same
+    # log the windows tail, so a TensorFlow failure during a retrain shows up
+    # in the terminal pane rather than only in whatever terminal started it.
+    try:
+        import webcam_errors                                   # noqa: PLC0415
+        webcam_errors.install_excepthook('train_webcam_brain')
+    except ImportError:
+        pass
     parser = argparse.ArgumentParser(
         description='Train brain G, the night vision brain, on clear photos.')
     parser.add_argument('--photos', help='folder of clear, well exposed photos')

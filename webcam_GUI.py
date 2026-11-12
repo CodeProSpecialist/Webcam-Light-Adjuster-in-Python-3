@@ -45,6 +45,21 @@ except ImportError:
 else:
     webcam_bootstrap.ensure('tkinter')
 
+# Then the whole list, out loud: numpy, tkinter, astral, OpenCV, TensorFlow,
+# v4l2-ctl, ffmpeg and ImageMagick, each one named with what was found and
+# where, and any install streamed as it runs. This is deliberately not quiet
+# the way the check above is - OpenCV and TensorFlow are the two that break,
+# they break in ways that look alike, and the record of which was installed
+# from where is the thing worth having when they do. WEBCAM_QUIET_INSTALL=1
+# turns it down to failures only; WEBCAM_NO_BOOTSTRAP=1 skips it entirely.
+try:
+    import webcam_install
+except ImportError:
+    pass
+else:
+    webcam_install.ensure_all(
+        verbose=not os.environ.get('WEBCAM_QUIET_INSTALL'))
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -73,6 +88,23 @@ try:
     import train_webcam_brain
 except ImportError:                                               # noqa: BLE001
     train_webcam_brain = None
+
+# Every OpenCV, TensorFlow, detector and correction failure is written here by
+# whichever part of the pipeline hit it - including by the scheduler and by
+# cron runs that have no terminal of their own - and this window tails it into
+# the terminal pane at the bottom so the failures are visible rather than only
+# showing up as a picture that quietly did not improve.
+try:
+    import webcam_errors
+except ImportError:                                               # noqa: BLE001
+    webcam_errors = None
+
+# The library checks and the four comparison frames for the tile at the
+# bottom of the page.
+try:
+    import webcam_status
+except ImportError:                                               # noqa: BLE001
+    webcam_status = None
 
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
 
@@ -230,6 +262,19 @@ class TerminalPane:
 
     POLL = 200        # ms between drains of the queue
     MAX_LINES = 2000  # scrollback kept before the oldest lines are dropped
+    ERROR_POLL = 1000  # ms between checks of the error log
+
+    # What the failures look like in the pane. Red for the vision and
+    # learning libraries, because those are the ones that change the picture;
+    # amber for the correction stages, which degrade rather than stop.
+    ERROR_COLOURS = {
+        'OpenCV': '#ff6b6b',
+        'TensorFlow': '#ff9b4a',
+        'brain G': '#ffd166',
+        'detector': '#9bdcff',
+        'night correction': '#ffd166',
+        '': '#ff8c8c',
+    }
 
     def __init__(self, parent, root, filename, args=(), side='bottom'):
         self.root = root
@@ -282,8 +327,19 @@ class TerminalPane:
                        lambda e: (self.text.yview_scroll(-3 if e.delta > 0 else 3, 'units'),
                                   'break')[1])
 
+        # Colour tags for the tailed failures, one per stage.
+        for stage, colour in self.ERROR_COLOURS.items():
+            self.text.tag_configure(f'err-{stage}', foreground=colour)
+        self.text.tag_configure('err-trace', foreground='#9a9a9a')
+
+        # Start reading the error log from its current end, so opening the
+        # window does not replay every failure since the machine was built.
+        # The tile below offers a button to dump the recent history on demand.
+        self.error_offset = webcam_errors.size() if webcam_errors else 0
+
         self.start()
         self.root.after(self.POLL, self.drain)
+        self.root.after(self.ERROR_POLL, self.drain_errors)
 
     # ---- the child process ----
 
@@ -370,13 +426,57 @@ class TerminalPane:
                                   fg='#aa0000')
         self.root.after(self.POLL, self.drain)
 
-    def write(self, line):
+    def drain_errors(self):
+        """Tail the error log into this pane.
+
+        The pipeline keeps working when OpenCV, TensorFlow, the detector or
+        one of the correction stages fails - it falls back - and that used to
+        happen silently. Everything it falls back from is written to the log
+        with its full traceback, and this is where it becomes visible.
+
+        Read by byte offset rather than re-read whole, so a long log costs
+        nothing per poll.
+        """
+        if webcam_errors is None:
+            return
+        try:
+            fresh, self.error_offset = webcam_errors.read_from(self.error_offset)
+            if fresh:
+                self.write_errors(fresh)
+        except Exception:                                      # noqa: BLE001
+            pass
+        finally:
+            self.root.after(self.ERROR_POLL, self.drain_errors)
+
+    def write_errors(self, text):
+        """Write logged failures in, coloured by which stage they came from.
+
+        A traceback's indented lines are greyed so the headline stays
+        readable: the first line says what failed and what was done instead,
+        which is the part worth seeing at a glance, and the frames under it
+        are there for when that is not enough.
+        """
+        stage = ''
+        for line in text.splitlines(keepends=True):
+            body = line.rstrip('\n')
+            if body.startswith('['):
+                where = body.split(']', 1)[-1].split(':', 1)[0].strip()
+                stage = webcam_errors.stage_of(where) if webcam_errors else ''
+                if stage not in self.ERROR_COLOURS:
+                    stage = ''
+                self.write(line, tag=f'err-{stage}')
+            elif body.startswith('    '):
+                self.write(line, tag='err-trace')
+            else:
+                self.write(line, tag=f'err-{stage}')
+
+    def write(self, line, tag=None):
         # Follow the newest line only when the view is already at the bottom,
         # so scrolling back to read something does not get yanked away by the
         # next line arriving.
         at_bottom = self.text.yview()[1] > 0.999
         self.text.configure(state='normal')
-        self.text.insert('end', line)
+        self.text.insert('end', line, tag or ())
         extra = int(self.text.index('end-1c').split('.')[0]) - self.MAX_LINES
         if extra > 0:
             self.text.delete('1.0', f'{extra + 1}.0')
@@ -436,6 +536,7 @@ class Window:
         self.build_enhance()
         self.terminal = TerminalPane(self.page, root, TERMINAL_SCRIPT, side='top')
         self.build_brain_info()
+        self.build_status_tile()
         self.size_to_fit()
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.meter:
@@ -1135,6 +1236,294 @@ class Window:
         self.brain_text.delete('1.0', 'end')
         self.brain_text.insert('end', text)
         self.brain_text.configure(state='disabled')
+
+    # ---- is it working, and what did it do to the picture ----
+
+    def build_status_tile(self):
+        """The bottom tile: whether the libraries work, and the four frames.
+
+        Two questions this answers that nothing else on the page does.
+
+        Is it working - OpenCV and TensorFlow are both needed and they fail
+        differently. OpenCV does the stacking, the CLAHE, the features and the
+        detector; TensorFlow runs brain G. Either can be installed and still
+        not run - a conda build sitting next to a pip one is the usual way -
+        and from the picture alone that looks the same as a working pipeline
+        having a quiet night. So each is imported and then actually used, and
+        only counts as working when the real call returns.
+
+        And what did it do - the four frames, two rows of two, each row the
+        width of the terminal above them. The top row is the correction: the
+        frame as the camera gave it, then the same frame stacked, CLAHE'd and
+        lifted by brain G. The row under it is the enhancement that runs on
+        top of that: the corrected frame again, then the frame with the car or
+        the person found in it and given a second lift of their own, with the
+        box drawn round what was picked out. Green for a person, blue for a
+        vehicle, the same colours webcam_detect.py draws.
+        """
+        frame = tk.LabelFrame(
+            self.page, text='  is it working, and what it did to the picture  ',
+            font=('Helvetica', 9, 'bold'))
+        frame.pack(side='top', fill='x', expand=False, padx=4, pady=(2, 8))
+        self.status_frame = frame
+
+        bar = tk.Frame(frame)
+        bar.pack(fill='x')
+        self.lib_summary = tk.Label(bar, text='checking the libraries...',
+                                    anchor='w', font=('Helvetica', 8),
+                                    fg='#003366')
+        self.lib_summary.pack(side='left', padx=4)
+        tk.Button(bar, text='Re-check', font=('Helvetica', 8),
+                  command=self.refresh_status_tile).pack(side='right', padx=2)
+        tk.Button(bar, text='Show recent errors', font=('Helvetica', 8),
+                  command=self.dump_errors).pack(side='right', padx=2)
+        tk.Button(bar, text='Clear error log', font=('Helvetica', 8),
+                  command=self.clear_errors).pack(side='right', padx=2)
+
+        # One row per library, filled in by the worker below.
+        self.lib_rows = {}
+        grid = tk.Frame(frame)
+        grid.pack(fill='x', padx=6, pady=(2, 4))
+        for index, name in enumerate(('OpenCV', 'TensorFlow',
+                                      'Object detector', 'Brain G')):
+            tk.Label(grid, text=f'{name}:', anchor='w', width=16,
+                     font=('Helvetica', 8, 'bold')).grid(row=index, column=0,
+                                                         sticky='w')
+            state = tk.Label(grid, text='checking...', anchor='w', width=12,
+                             font=('Monospace', 8), fg='#666666')
+            state.grid(row=index, column=1, sticky='w')
+            detail = tk.Label(grid, text='', anchor='w',
+                              font=('Helvetica', 8), fg='#333333',
+                              justify='left', wraplength=620)
+            detail.grid(row=index, column=2, sticky='w')
+            self.lib_rows[name] = (state, detail)
+
+        # The pictures. Two rows of two, with a caption under each.
+        self.compare_images = {}      # name -> PhotoImage, held against GC
+        self.compare_labels = {}
+        pictures = tk.Frame(frame)
+        pictures.pack(fill='x', padx=6, pady=(0, 2))
+        self.compare_note = tk.Label(
+            pictures, text='no comparison frames yet - they are written the '
+                           'next time a snapshot is corrected',
+            anchor='w', font=('Helvetica', 8), fg='#003366', justify='left',
+            wraplength=740)
+        self.compare_note.pack(fill='x', pady=(0, 2))
+
+        stages = webcam_status.STAGES if webcam_status else []
+        for row in (0, 1):
+            line = tk.Frame(pictures)
+            line.pack(fill='x')
+            for column in (0, 1):
+                index = row * 2 + column
+                name, caption = (stages[index] if index < len(stages)
+                                 else (f'slot{index}', ''))
+                cell = tk.Frame(line, bd=1, relief='sunken')
+                cell.pack(side='left', padx=(0, 6), pady=2)
+                picture = tk.Label(cell, text='(not written yet)',
+                                   font=('Helvetica', 8), fg='#888888',
+                                   bg='#101010', width=46, height=12)
+                picture.pack()
+                tk.Label(cell, text=caption, font=('Helvetica', 8),
+                         anchor='w', fg='#222222').pack(fill='x')
+                self.compare_labels[name] = picture
+
+        legend = tk.Frame(pictures)
+        legend.pack(fill='x', pady=(2, 0))
+        tk.Label(legend, text='boxes:', font=('Helvetica', 8),
+                 fg='#333333').pack(side='left')
+        for label, colour, _bgr in (webcam_status.LEGEND if webcam_status
+                                    else []):
+            tk.Label(legend, text=f'  {label}  ', font=('Helvetica', 8, 'bold'),
+                     bg=colour, fg='#000000').pack(side='left', padx=3)
+
+        self.status_worker = None
+        self.status_queue = queue.Queue()
+        self.refresh_status_tile()
+        self.root.after(30000, self.poll_compare_frames)
+
+    def refresh_status_tile(self):
+        """Run the checks off the main thread and redraw when they land.
+
+        Importing TensorFlow takes seconds, and doing that on the thread
+        running the event loop would freeze the window while it happened -
+        which looks exactly like the crash this tile is meant to diagnose.
+        """
+        if webcam_status is None:
+            self.lib_summary.configure(
+                text='webcam_status.py is not next to this file',
+                fg='#aa0000')
+            return
+        if self.status_worker and self.status_worker.is_alive():
+            return
+        self.lib_summary.configure(text='checking the libraries...',
+                                   fg='#003366')
+
+        def work():
+            try:
+                self.status_queue.put(('checks', webcam_status.all_checks()))
+            except Exception as problem:                       # noqa: BLE001
+                self.status_queue.put(('failed', problem))
+
+        self.status_worker = threading.Thread(target=work, daemon=True)
+        self.status_worker.start()
+        self.root.after(200, self.drain_status_worker)
+
+    def drain_status_worker(self):
+        try:
+            kind, payload = self.status_queue.get_nowait()
+        except queue.Empty:
+            if self.status_worker and self.status_worker.is_alive():
+                self.root.after(200, self.drain_status_worker)
+            return
+        if kind == 'failed':
+            self.lib_summary.configure(text=f'the checks themselves failed: '
+                                            f'{payload}', fg='#aa0000')
+            return
+        self.show_checks(payload)
+        self.load_compare_frames()
+
+    def show_checks(self, rows):
+        """Fill the four library rows in, and say in one line how many of them
+        are working - which is what gets read at a glance."""
+        working = 0
+        for row in rows:
+            widgets = self.lib_rows.get(row['name'])
+            if not widgets:
+                continue
+            state, detail = widgets
+            if row['ok']:
+                working += 1
+                state.configure(text='working', fg='#006600')
+            else:
+                state.configure(text='NOT working', fg='#aa0000')
+            version = f"{row['version']}  " if row['version'] else ''
+            hint = f"   try: {row['hint']}" if row['hint'] and not row['ok'] else ''
+            detail.configure(text=f"{version}{row['detail']}{hint}",
+                             fg='#333333' if row['ok'] else '#aa0000')
+        total = len(rows)
+        newest = webcam_errors.last_line() if webcam_errors else ''
+        summary = f'{working} of {total} working'
+        if newest:
+            summary += f'   -   newest failure: {newest[:90]}'
+        self.lib_summary.configure(
+            text=summary, fg='#003366' if working == total else '#aa0000')
+
+    # ---- the four frames ----
+
+    def compare_width(self):
+        """How wide the pair of pictures should be: the width of the terminal
+        above them, so the rows line up with it and with each other."""
+        try:
+            width = self.terminal.text.winfo_width()
+        except Exception:                                      # noqa: BLE001
+            width = 0
+        if width < 100:          # before the window is mapped
+            width = TERMINAL_COLS * 8
+        return max(360, min(1600, width))
+
+    def load_compare_frames(self):
+        """Rebuild the thumbnails and hang them on the four labels.
+
+        Written as PPM by webcam_status, which tkinter's own PhotoImage reads
+        with nothing else installed - no Pillow, which is one more dependency
+        to go wrong on a window that installs its own.
+        """
+        if webcam_status is None:
+            return
+        try:
+            thumbs = webcam_status.thumbnails(self.compare_width())
+        except Exception as problem:                           # noqa: BLE001
+            self.compare_note.configure(
+                text=f'could not build the comparison thumbnails: {problem}',
+                fg='#aa0000')
+            return
+
+        shown = 0
+        for thumb in thumbs:
+            label = self.compare_labels.get(thumb['name'])
+            if label is None:
+                continue
+            if not thumb['path']:
+                label.configure(image='', text='(not written yet)',
+                                fg='#888888')
+                self.compare_images.pop(thumb['name'], None)
+                continue
+            try:
+                picture = tk.PhotoImage(file=thumb['path'])
+            except Exception as problem:                       # noqa: BLE001
+                label.configure(image='', text=f'(unreadable: {problem})',
+                                fg='#aa0000')
+                continue
+            self.compare_images[thumb['name']] = picture
+            label.configure(image=picture, text='',
+                            width=thumb['width'], height=thumb['height'])
+            shown += 1
+
+        note = webcam_status.compare_note()
+        if shown:
+            self.compare_note.configure(
+                text=note or f'{shown} of 4 frames shown', fg='#003366')
+        else:
+            self.compare_note.configure(
+                text='no comparison frames yet - they are written the next '
+                     'time a snapshot is corrected', fg='#666666')
+
+    def poll_compare_frames(self):
+        """Pick up a newer set of frames without being asked.
+
+        The scheduler corrects a snapshot every few minutes while this window
+        sits open, and the point of the tile is to show the last one it did.
+        Only the file times are looked at, so a quiet night costs nothing.
+        """
+        try:
+            if webcam_status is not None:
+                folder = webcam_status.compare_dir()
+                newest = 0
+                for name, _caption in webcam_status.STAGES:
+                    path = os.path.join(folder, name.replace('.ppm', '.jpg'))
+                    if os.path.exists(path):
+                        newest = max(newest, os.path.getmtime(path))
+                if newest and newest > getattr(self, 'compare_seen', 0):
+                    self.compare_seen = newest
+                    self.load_compare_frames()
+        except Exception:                                      # noqa: BLE001
+            pass
+        finally:
+            self.root.after(30000, self.poll_compare_frames)
+
+    # ---- the error log ----
+
+    def dump_errors(self):
+        """Put the recent history of failures into the terminal pane.
+
+        The pane only tails what happens from the moment the window opened,
+        which is the right default - otherwise every window would open full
+        of old news. This is for when the picture has been wrong for days and
+        the question is what has been failing all along.
+        """
+        if webcam_errors is None:
+            self.lib_summary.configure(
+                text='webcam_errors.py is not next to this file', fg='#aa0000')
+            return
+        text = webcam_errors.tail(120)
+        if not text.strip():
+            self.terminal.write('--- no failures logged '
+                                f'({webcam_errors.LOG_FILE}) ---\n')
+            return
+        self.terminal.write(f'--- recent failures from '
+                            f'{webcam_errors.LOG_FILE} ---\n')
+        self.terminal.write_errors(text)
+        self.terminal.write('--- end of the log ---\n')
+
+    def clear_errors(self):
+        if webcam_errors is None:
+            return
+        done = webcam_errors.clear()
+        self.terminal.error_offset = 0
+        self.terminal.write('--- error log cleared ---\n' if done else
+                            '--- there was no error log to clear ---\n')
+        self.refresh_status_tile()
 
     # ---- night image enhancement ----
 

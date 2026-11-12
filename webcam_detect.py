@@ -106,6 +106,26 @@ BOOST_FEATHER = 25
 BOOST_CLAHE_CLIP = 3.0
 
 
+# Every handler in here says what went wrong through this, so an OpenCV
+# failure shows up in the window's terminal pane instead of only showing up as
+# a frame that quietly did not get corrected.
+try:
+    import webcam_errors
+except ImportError:                                               # noqa: BLE001
+    webcam_errors = None
+
+
+def _oops(where, problem=None, detail='', once_key=''):
+    """Report a failure and carry on. A no-op if webcam_errors.py was
+    deleted, because the correction working matters more than the log."""
+    if webcam_errors is None:
+        return
+    if once_key:
+        webcam_errors.once(once_key, where, detail or str(problem))
+    else:
+        webcam_errors.report(where, problem, detail=detail)
+
+
 def _cv2():
     if _cv2.module is None:
         try:
@@ -176,6 +196,7 @@ class Detector:
         except Exception as problem:                          # noqa: BLE001
             self.net = None
             self.why = f'could not load the detector: {problem}'
+            _oops('detector.load', problem, detail=f'model {path}')
             return False
 
         # Anchors are built per stride on demand rather than from a fixed
@@ -225,6 +246,8 @@ class Detector:
             outs = self.net.forward(self.net.getUnconnectedOutLayersNames())
         except Exception as problem:                          # noqa: BLE001
             self.why = f'detection failed: {problem}'
+            _oops('detector.detect', problem,
+                  detail='the net ran but the forward pass threw')
             return []
 
         # Sort the outputs out by what they are rather than by the order they
@@ -299,8 +322,10 @@ class Detector:
         try:
             indices = cv2.dnn.NMSBoxes(boxes.tolist(), confidences.tolist(),
                                        self.threshold, IOU_THRESHOLD)
-        except Exception:                                     # noqa: BLE001
+        except Exception as problem:                          # noqa: BLE001
             self.last = []
+            _oops('detector.nms', problem,
+                  detail='OpenCV NMSBoxes threw - no boxes kept this pass')
             return []
         indices = numpy.array(indices).reshape(-1)
 
@@ -377,7 +402,9 @@ class Detector:
             out = image.astype(numpy.float32) * (1 - mask) + \
                 lifted.astype(numpy.float32) * mask
             return numpy.clip(out, 0, 255).astype(numpy.uint8)
-        except Exception:                                     # noqa: BLE001
+        except Exception as problem:                          # noqa: BLE001
+            _oops('detector.boost', problem,
+                  detail='returning the frame unboosted')
             return image
 
     def draw(self, image, boxes):
@@ -390,7 +417,10 @@ class Detector:
         cv2, _numpy = tools
         out = image.copy()
         for box in boxes:
-            colour = (90, 220, 90) if box['kind'] == 'person' else (90, 180, 250)
+            # BGR, not RGB: (90, 180, 250) reads as orange on the frame,
+            # which is what this drew before. Blue for a vehicle, green for a
+            # person, matching the legend under the pictures in the window.
+            colour = (90, 220, 90) if box['kind'] == 'person' else (250, 180, 90)
             cv2.rectangle(out, (box['x'], box['y']),
                           (box['x'] + box['w'], box['y'] + box['h']), colour, 2)
             text = f"{box['label']} {box['score']:.2f}"
@@ -435,7 +465,8 @@ class Detector:
                 cv2.imwrite(path, image[y:y2, x:x2],
                             [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                 written.append(path)
-            except Exception:                                 # noqa: BLE001
+            except Exception as problem:                      # noqa: BLE001
+                _oops('detector.crops', problem, detail='one crop not written')
                 continue
 
         # Keep the folder bounded, the way the snapshots are kept.

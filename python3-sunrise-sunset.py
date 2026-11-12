@@ -23,6 +23,18 @@ except ImportError:
 else:
     webcam_bootstrap.ensure('astral')
 
+# The full dependency list, printed step by step. The scheduler is often the
+# first thing to run on a fresh machine, so this is where the install usually
+# happens; under cron there is no terminal to ask on, so it prints the plan
+# and carries on unless WEBCAM_AUTO_INSTALL=1 says to go ahead.
+try:
+    import webcam_install
+except ImportError:
+    pass
+else:
+    webcam_install.ensure_all(
+        verbose=not os.environ.get('WEBCAM_QUIET_INSTALL'))
+
 
 # Run one of the preset wrapper scripts.
 #

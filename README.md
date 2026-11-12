@@ -749,6 +749,140 @@ python3 webcam_detect.py some-snapshot.jpg --save
 ```
 
 
+## Is it working: the status tile, and the four-frame comparison
+
+The correction is a stack of things that each fail quietly: OpenCV does the
+stacking, the CLAHE, the denoise and the detector, TensorFlow runs brain G,
+and when either is half-installed the picture still comes out - just
+uncorrected, and with nothing anywhere saying so. A mixed conda and pip
+OpenCV is the usual way in, and it imports perfectly and then throws on the
+first `createCLAHE`.
+
+So the bottom of the window, under brain G's tile, answers the question
+directly. Four rows, each re-checked by the refresh button:
+
+| Row | What it means |
+|-----|---------------|
+| OpenCV | imported, **and** a CLAHE and a colour convert actually ran |
+| TensorFlow | imported, **and** a tensor add came back with the right answer, on CPU or GPU |
+| Object detector | the NanoDet `.onnx` is present and the net loaded |
+| Brain G | a brain is loaded, and whether it is self-trained or the shipped one |
+
+Each row is green when working and red when not, with the version, and a
+failed row prints what to try - for the mixed-install case, that it is a
+conda and a pip OpenCV and one of them has to go.
+
+Nothing here reports "installed". Installed is not the question; every row is
+a small piece of real work, run on the spot.
+
+### The four frames
+
+Under the rows, the frames themselves, two to a row at the width of the
+terminal above them:
+
+```
+  before - as the camera gave it      after - stacked, CLAHE, brain G
+  before - the corrected frame        after - car/person found and lifted
+```
+
+The top row is the correction. The bottom row is the enhancement that runs on
+top of it, and its right-hand frame carries the boxes: **green for a person,
+blue for a car or other vehicle**, each with what the detector called it and
+how sure it was. The line above them says what the pass did and what it found.
+
+The order is the point. The detector runs last, on the corrected frame,
+because a detector looking at the raw night frame sees a black rectangle and
+finds nothing in it - measured on one night frame here, nothing at all before
+the correction and three people and two vehicles after it. The bottom row is
+where that shows.
+
+The boxes are drawn on this copy and on nothing else. The corrected still
+that gets kept has none on it, deliberately: a rectangle drawn across a
+number plate is worse than no rectangle, and these four exist to be looked at
+rather than to be evidence.
+
+The frames are written by the correction itself into `compare/` beside the
+enhanced stills, as ordinary JPEGs, and scaled into PPM thumbnails for the
+window. PPM because it is the one format both Python's tkinter and Perl's Tk
+read with no extra module - these programs install their own dependencies and
+asking for Tk::PNG or Pillow on top is one more thing to fail at three in the
+morning.
+
+## Every error, in full, in a terminal of its own
+
+Everything in the correction path is written so a failure costs the picture
+rather than the program: a CLAHE that throws leaves the frame uncorrected and
+the scheduler carries on. That is right at three in the morning and it used
+to mean the failure was invisible.
+
+Now every one of those handlers writes first. The pane under the comparison
+frames is a terminal tailing that log, verbose, with the full traceback:
+
+```
+[2026-11-12 03:14:07] OpenCV FAILED: cv2.error: OpenCV(5.0.0) ...
+    while: CLAHE on the stack of 8
+    Traceback (most recent call last):
+      ...
+    try: a mixed conda and pip opencv - keep one of them
+```
+
+Stages are tagged and coloured, so `OpenCV`, `TensorFlow`, `brain G`,
+`detector` and `night correction` can be told apart at a glance and grepped
+apart in the file. The same exception repeating every pass is written once a
+minute rather than forty times an hour. The log is `~/Pictures/webcam/`,
+rolled by size, with a clear button in the tile.
+
+Notes go in too, not only failures - what the correction decided, how far
+brain G lifted the frame - so the pane shows the run rather than only its
+worst moments.
+
+## It installs its own dependencies, out loud
+
+Every program checks and installs what it needs on startup, and says what it
+is doing while it does it, step by step:
+
+```
+Checking what the webcam programs need.
+  python   3.12.7 at /home/david/anaconda3/bin/python3
+  this is  conda (base)
+
+[1/8] numpy        present   2.1.3
+[2/8] tkinter      present
+[3/8] astral       MISSING   ModuleNotFoundError: No module named 'astral'
+          needed for: sunrise and sunset times for the schedule
+[4/8] cv2          present   5.0.0
+[5/8] tensorflow   MISSING   ModuleNotFoundError: No module named 'tensorflow'
+          needed for: brain G, the learnt night correction
+
+2 thing(s) to install:
+  astral         via conda  conda install -y -c conda-forge astral
+  tensorflow     via pip    python3 -m pip install --upgrade tensorflow
+
+[1/2] installing astral with conda
+    $ conda install -y -c conda-forge astral
+    | Collecting package metadata (repodata.json): done
+    | Solving environment: done
+    | Preparing transaction: done
+    finished with exit code 0
+    import astral: works
+```
+
+Every line of the installer's own output is streamed as it arrives rather
+than held back to the end, each step ends with its exit code, and each
+installed module is imported afterwards to confirm it actually took.
+
+Where it installs from is chosen, not guessed. **In a conda python, OpenCV
+comes from conda-forge** - `conda install -c conda-forge opencv` - because
+installing the pip OpenCV on top of the conda one is the mixed install that
+breaks the CLAHE, and this is the place that prevents it. Otherwise pip, and
+apt for what pip has no answer for (`python3-tk`, `v4l-utils`, `ffmpeg`,
+`imagemagick`).
+
+It asks before installing when there is a terminal to ask on. With no
+terminal - started from cron, or from a desktop launcher - it prints the plan
+and installs nothing, unless `WEBCAM_AUTO_INSTALL=1` says to go ahead
+unattended. `WEBCAM_NO_BOOTSTRAP=1` skips the check entirely.
+
 ## Files
 
 | File | What it is |
@@ -773,3 +907,8 @@ python3 webcam_detect.py some-snapshot.jpg --save
 | `~/.webcam-enhance.conf` | the two correction switches, shared with the scheduler |
 | `webcam_detect.py` | finding cars and people, and aiming the correction at them |
 | `detector/` | the NanoDet object detector (Apache 2.0) and its licence |
+| `webcam_install.py` | installs every dependency at startup, verbosely, conda-aware |
+| `webcam_status.py` | the status rows, and the four comparison thumbnails |
+| `webcam_errors.py` | the one log every OpenCV, TensorFlow, brain and correction failure goes to |
+| `~/Pictures/webcam/webcam-errors.log` | that log, rolled by size |
+| `~/Pictures/webcam/.../enhanced/compare/` | the four comparison frames the window shows |
