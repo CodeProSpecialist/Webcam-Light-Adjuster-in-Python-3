@@ -44,6 +44,15 @@ import re
 import subprocess
 import time
 
+# The night enhancement - frame averaging, CLAHE and the ML auto correct - is
+# a separate module because it is a separate kind of work: it never touches
+# the camera, it only reads the stills this loop has already measured. With
+# the file missing, everything here carries on exactly as before.
+try:
+    from webcam_enhance import Enhancer
+except ImportError:                                            # noqa: BLE001
+    Enhancer = None
+
 # Measure every 5 seconds, then wait two samples after a correction.
 #
 # Each change takes a moment to reach the next still the camera software
@@ -279,6 +288,12 @@ class LightMeter:
         self.capture_note = ''     # set once, so a busy camera is not shouted about
         self.capture_checked = False
         self.busy_until = 0.0      # when the camera is held, stop asking for a while
+        # The enhancer, which writes enhanced copies of the stills into an
+        # `enhanced` folder beside them when either of its two switches is on.
+        # It is given no folder of its own: it takes each frame's own folder,
+        # so it follows the snapshot setting wherever that is pointed.
+        self.enhancer = Enhancer() if Enhancer else None
+        self.enhance_note = ''
         # The startup probe. Done here so that simply creating the meter asks
         # the hardware what it can do, before any correction is attempted.
         self.learn_ranges()
@@ -385,6 +400,59 @@ class LightMeter:
         time.sleep(0.33)
         _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}=1'])
         return True
+
+    def gain_fraction(self, gain_now=None):
+        """How far up its own range the gain is sitting, 0 to 1, or None.
+
+        This is the one honest test of how dark it actually is. The clock says
+        what time it is; the gain says whether the camera is struggling, which
+        is what the enhancement needs to know - a floodlit yard at midnight
+        needs none of it and an overcast dusk may need all of it.
+        """
+        if 'gain' not in self.ranges:
+            return None
+        if gain_now is None:
+            gain_now = self.wrote.get('gain')
+        if gain_now is None:
+            gain_now = self.get_gain()
+        if gain_now is None:
+            return None
+        low, high = self.ranges['gain']
+        if high <= low:
+            return None
+        return max(0.0, min(1.0, (gain_now - low) / (high - low)))
+
+    def get_gain(self):
+        """Read the gain off the camera, for when nothing has been written
+        yet."""
+        out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl', 'gain'])
+        found = re.search(r':\s*(-?\d+)', out)
+        return int(found.group(1)) if found else None
+
+    def enhance(self, frame, mean=None):
+        """Hand the current still to the enhancer, if there is one.
+
+        This is deliberately the last thing a pass does and it is kept well
+        away from everything above it: it reads a file and writes a file, and
+        it sends nothing to the camera. A failure in here cannot affect the
+        correction loop, and the enhanced copies go in their own subfolder so
+        that the next pass still measures the camera's own output rather than
+        measuring its own enhancement and chasing it.
+        """
+        if not self.enhancer:
+            self.enhance_note = ''
+            return None
+        try:
+            line = self.enhancer.run(frame, gain_fraction=self.gain_fraction(),
+                                     mean=mean)
+        except Exception as problem:                           # noqa: BLE001
+            self.enhance_note = f'enhancement failed: {problem}'
+            log(self.enhance_note)
+            return self.enhance_note
+        self.enhance_note = self.enhancer.note
+        if line:
+            log(line)
+        return line
 
     def sharpness_for(self, gain_now):
         """The sharpness this much gain calls for, in the control's own
@@ -757,6 +825,12 @@ class LightMeter:
                     + (f' - {self.capture_note}' if self.capture_note else ''))
         mean, hot, cold = measured
 
+        # The enhanced copy of this still, when either switch is on. This is
+        # not part of the correction - it changes no control and the recording
+        # is untouched by it - so it happens here, once the frame is in hand
+        # and measured, and whatever it says is added to the status line.
+        enhanced = self.enhance(frame, mean=mean)
+
         # Median of the last three keeps a passing pair of headlights from
         # dragging the picture darker for the next minute.
         self.means.append(mean)
@@ -804,7 +878,8 @@ class LightMeter:
         self.last_dir = direction
 
         return (f'light meter: trim {self.trim:+d}, mean {middle:.0f} of target '
-                f'{self.target}, white {hot * 100:.1f}%, black {cold * 100:.0f}% - {why}')
+                f'{self.target}, white {hot * 100:.1f}%, black {cold * 100:.0f}% - {why}'
+                + (f' | {enhanced}' if enhanced else ''))
 
     def sleep_with_metering(self, seconds, report=print):
         """Sleep, metering the picture every METER_EVERY seconds along the way.

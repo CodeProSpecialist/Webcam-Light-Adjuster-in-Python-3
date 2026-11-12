@@ -1,0 +1,50 @@
+{
+  "brain": "brain_g_night",
+  "feature_count": 12,
+  "foundation_units": [
+    "DEEP_SHADOW",
+    "NEAR_BLACK_CLIPPED",
+    "LOCAL_DETAIL",
+    "GLARE_NEARBY",
+    "FLAT_NOISE",
+    "MIDTONE_BODY",
+    "HIGHLIGHT_GUARD",
+    "COLOUR_PRESENT",
+    "GLOBAL_DARK_SCENE"
+  ],
+  "foundation_frozen": true,
+  "architecture": "12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2",
+  "outputs": [
+    "log_gain_0_1",
+    "saturation_0_1_neutral_at_0.5"
+  ],
+  "gain_max": 12.0,
+  "pretrain_samples": 20000,
+  "pretrain_cap": 20000,
+  "epochs_run": 12,
+  "epochs_max": 30,
+  "val_loss": 0.026148,
+  "val_mae": 0.11871,
+  "flat_answer_val_loss": 0.033546,
+  "photos_trained_on": 28,
+  "photos_held_back": 6,
+  "photo_folder": "/home/claude/corpus",
+  "trained_at": "2026-11-11 18:13:41",
+  "tensorflow": "2.21.0",
+  "read_only": true,
+  "evaluation": {
+    "frames_stacked": 8,
+    "photos_scored": 6,
+    "trials_each": 2,
+    "dark_input_psnr_db": 5.68,
+    "dark_input_ssim": 0.08,
+    "stack_and_clahe_psnr_db": 6.86,
+    "stack_and_clahe_ssim": 0.229,
+    "analytic_psnr_db": 12.83,
+    "analytic_ssim": 0.535,
+    "brain_psnr_db": 16.64,
+    "brain_ssim": 0.727,
+    "brain_beats_analytic_db": 3.81
+  },
+  "model_sha256": "757af8327b32ca1db47f32b419371e060dbeb7f161990ed6bcdd7d272832ec27"
+}

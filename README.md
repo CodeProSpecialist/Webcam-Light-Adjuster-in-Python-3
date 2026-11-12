@@ -519,6 +519,132 @@ newest 30, oldest deleted first, and the same happens once at startup. Every
 With no snapshot available, nothing is corrected and the presets stand as they
 always did.
 
+## Night image correction: stacking, CLAHE and brain G
+
+This is the part of the picture that no camera control can reach, and it is
+switched on with the two boxes in the window:
+
+* **night image CLAHE and ML auto correct** - runs it once the gain is past
+  half its range, which is the same test the sharpness uses for night. A
+  floodlit yard at midnight does not get it; an overcast dusk does.
+* **24 hour image CLAHE and ML auto correct** - runs it on every still around
+  the clock, and overrides the first box.
+
+Both are written to `~/.webcam-enhance.conf`, so a box ticked in the window is
+picked up by the scheduler on its next pass, including when the scheduler is
+the only thing running under cron.
+
+**It works on the snapshots in the picture folder, not on the camera.** The
+recording software holds the camera and owns the video; this reads the stills
+that are already in the folder and writes corrected copies into an `enhanced`
+subfolder beside them. Nothing it does changes what gets recorded - the presets
+and the light meter remain the only things that affect that. What it gives is a
+far more readable set of stills of the same scene.
+
+Three things happen, in this order, because each makes the next work better:
+
+1. **Frame averaging.** The stills are consecutive frames of the same scene, so
+   averaging the newest few cancels sensor noise while leaving the scene alone.
+   This is the only one of the three that adds real information, and it is the
+   one to trust. Measured on held-back photos, going from one frame to eight is
+   worth **+2.49 dB and +0.27 SSIM** - more than CLAHE and the correct put
+   together.
+2. **CLAHE.** Contrast-limited adaptive histogram equalization, per tile, so a
+   security light in one corner does not set the scale for the whole frame.
+   Real CLAHE needs ImageMagick 7 (Ubuntu 26.04) or OpenCV; on ImageMagick 6
+   a global contrast stretch stands in and the status line says so.
+3. **Brain G**, the night vision brain - see below.
+
+### Brain G
+
+A trained model, built in the same shape as the trading robot's brains: a
+**frozen hand-weighted foundation** of nine named detector units with a small
+trainable head on top, a 20,000 sample pretrain, a `meta.json` beside the
+model, and a stale-model check that retrains rather than quietly running a
+model that no longer matches the code.
+
+```
+12 features -> 9 FROZEN detectors -> (those 9 + the raw 12) -> 24 -> 16 -> 2
+```
+
+The nine frozen units: `DEEP_SHADOW`, `NEAR_BLACK_CLIPPED`, `LOCAL_DETAIL`,
+`GLARE_NEARBY`, `FLAT_NOISE`, `MIDTONE_BODY`, `HIGHLIGHT_GUARD`,
+`COLOUR_PRESENT`, `GLOBAL_DARK_SCENE`.
+
+**It is trained on clear photos.** Each clear photo is darkened with a camera
+model - lost exposure, Poisson shot noise, read noise, a softened lens, a
+colour cast, JPEG, and some of them averaged in stacks the way they are at run
+time - and the brain learns, for every pixel, how much that pixel has to be
+lifted to get back to the clear original. The clear photo is the answer sheet.
+
+Two numbers come out per pixel: a brightness gain and a colour correction to go
+with it. Per-pixel is the whole point - a single exposure setting cannot lift a
+car in deep shadow *and* leave the security light above it alone, and a
+per-pixel gain can.
+
+Measured on photos held back from training whole (not by pixel), eight degraded
+frames of each through the real pipeline, against the clear original:
+
+| stage | PSNR dB | SSIM |
+|-------|--------:|-----:|
+| one dark frame | 5.68 | 0.080 |
+| stacked + CLAHE | 6.86 | 0.229 |
+| + analytic correct | 12.83 | 0.535 |
+| + brain G | **16.64** | **0.727** |
+
+So the brain is worth **+3.81 dB** on the analytic correct, which is what runs
+when there is no brain to load. The window's brain tile shows these numbers,
+and the score a flat "lift everything the same amount" answer got, which is the
+only honest way to read the rest.
+
+Keeping the foundation frozen was not just house style - it was measured. The
+frozen detectors plus the raw feature path beat an unconstrained net several
+times the size, so the hand-weighted units are adding information rather than
+only constraining the fit.
+
+**What it cannot do.** The brain is making an informed guess: it was trained to
+produce what a clear photograph of the scene would have looked like, so it will
+confidently fill in what it expects to be there. It is a good way to see
+whether a vehicle is present and roughly what it is doing. **It is not
+evidence** - a number plate the sensor never captured can come back looking
+sharp and being wrong.
+
+### Retrain it on your own camera
+
+The brain that ships here was trained on general photographs. One trained on
+daytime stills from *your* camera knows that lens and that sensor, and does
+better. Leave the 24 hour box off, let the picture folder fill through a sunny
+afternoon, copy those stills somewhere, and run:
+
+```bash
+python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --force
+```
+
+It writes `~/.webcam-models/brain_g_night_model/`, which is looked at before
+the copy that ships here, scores itself on photos it held back, and makes the
+model read-only when it is done.
+
+### Getting more out of the stacking
+
+Frame averaging is the biggest real win and it is limited by how many stills
+land inside a three minute window. At one snapshot every 30 seconds only about
+six frames are available. If the recording software can be told to write
+snapshots every few seconds instead, the stack gets its full eight frames of
+genuinely the same moment and the night picture improves accordingly.
+
+### What it needs
+
+| | |
+|---|---|
+| nothing | the analytic correct and a contrast stretch, through ImageMagick |
+| ImageMagick 7 | real CLAHE |
+| OpenCV (`pip install opencv-python`) | faster, and true per-tile CLAHE |
+| TensorFlow (`pip install tensorflow-cpu`) | enables brain G |
+
+Any piece that is missing is named in the brain tile and in the status line,
+and the next tier down does the work instead.
+
+
 ## Files
 
 | File | What it is |
@@ -537,3 +663,7 @@ always did.
 | `bright-sun-sharp-webcam.py` | wrapper: bright sun |
 | `pre-sunset-sharp-webcam.py` | wrapper: golden evening |
 | `~/.webcam-sun-times.conf` | the last sunrise and sunset times, for offline use |
+| `webcam_enhance.py` | night image correction: stacking, CLAHE, brain G |
+| `train_webcam_brain.py` | brain G: the model, the frozen foundation, and its trainer |
+| `brain_g_night_model/` | the trained brain that ships here, and its `meta.json` |
+| `~/.webcam-enhance.conf` | the two correction switches, shared with the scheduler |

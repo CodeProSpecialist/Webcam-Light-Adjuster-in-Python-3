@@ -58,6 +58,15 @@ except ImportError as problem:                                    # noqa: BLE001
     METER_SETTLE = 1
     LOG_FILE = ''
 
+# The two enhancement switches live in a file rather than in this window, so
+# that the scheduler - which may be the only thing running at three in the
+# morning - reads the same answer the window shows.
+try:
+    import webcam_enhance
+except ImportError as problem:                                    # noqa: BLE001
+    print(f'night image enhancement unavailable: {problem}', file=sys.stderr)
+    webcam_enhance = None
+
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
 
 _CONTROL_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((int|bool|menu|intmenu)\)', re.I)
@@ -215,7 +224,7 @@ class TerminalPane:
     POLL = 200        # ms between drains of the queue
     MAX_LINES = 2000  # scrollback kept before the oldest lines are dropped
 
-    def __init__(self, parent, root, filename, args=()):
+    def __init__(self, parent, root, filename, args=(), side='bottom'):
         self.root = root
         self.filename = filename
         self.script = find_beside(filename)
@@ -227,7 +236,7 @@ class TerminalPane:
 
         frame = tk.LabelFrame(parent, text=f'  {filename}  ',
                               font=('Helvetica', 9, 'bold'))
-        frame.pack(side='bottom', fill='x', padx=4, pady=(2, 4))
+        frame.pack(side=side, fill='x', expand=False, padx=4, pady=(2, 4))
         self.frame = frame
 
         bar = tk.Frame(frame)
@@ -380,6 +389,14 @@ class Window:
         self.meter = LightMeter(device=DEVICE) if LightMeter else None
         self.meter_on = tk.BooleanVar(value=True)
         self.bool_vars = {}
+        # Both switches start at whatever they were left at, not at off: the
+        # scheduler has been running on them all night and the window should
+        # show what is actually in force rather than resetting it.
+        saved = webcam_enhance.read_settings() if webcam_enhance else {}
+        self.enh_night = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_NIGHT', ''), False)))
+        self.enh_all_day = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_ALL_DAY', ''), False)))
 
         root.title('Webcam Settings')
         tk.Label(root, text='Webcam Controls', font=('Helvetica', 13, 'bold')).pack(pady=4)
@@ -392,11 +409,17 @@ class Window:
             font=('Helvetica', 9), fg='#003366',
         ).pack()
 
-        self.terminal = TerminalPane(root, root, TERMINAL_SCRIPT)
+        # The whole window below the heading is one tall scrolling page, in
+        # this order down it: the camera controls and presets side by side,
+        # then the scheduler's terminal, then the brain's details. The
+        # scrollbar down the right hand side moves all of it together.
         self.build_scroll_area()
         self.build_controls()
         self.build_presets()
         self.build_meter()
+        self.build_enhance()
+        self.terminal = TerminalPane(self.page, root, TERMINAL_SCRIPT, side='top')
+        self.build_brain_info()
         self.size_to_fit()
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.meter:
@@ -429,11 +452,19 @@ class Window:
         vbar.pack(side='right', fill='y')
         area.pack(fill='both', expand=True)
 
-        self.cols = tk.Frame(self.canvas)
-        self.cols_id = self.canvas.create_window(0, 0, window=self.cols, anchor='nw')
-        self.cols.bind('<Configure>',
+        # The page: everything that scrolls lives in here, stacked top to
+        # bottom. A Frame cannot scroll itself, so it goes into the canvas as
+        # a canvas window and the canvas scrolls it.
+        self.page = tk.Frame(self.canvas)
+        self.cols_id = self.canvas.create_window(0, 0, window=self.page, anchor='nw')
+        self.page.bind('<Configure>',
                        lambda e: self.canvas.configure(scrollregion=self.canvas.bbox('all')))
         self.canvas.bind('<Configure>', self.on_canvas_resize)
+
+        # The two columns at the top of the page: controls on the left,
+        # presets and the switches on the right.
+        self.cols = tk.Frame(self.page)
+        self.cols.pack(side='top', fill='x', anchor='nw')
 
         # X11 sends buttons 4 and 5 for the wheel; <MouseWheel> is the rest.
         self.root.bind_all('<Button-4>', lambda e: self.canvas.yview_scroll(-3, 'units'))
@@ -456,21 +487,24 @@ class Window:
         # hand column instead of letting the horizontal scrollbar reach it.
         if event.width <= 1:
             return
-        needed = self.cols.winfo_reqwidth()
+        needed = self.page.winfo_reqwidth()
         self.canvas.itemconfigure(self.cols_id, width=max(event.width, needed))
 
     def size_to_fit(self):
-        """Open at the size the controls ask for, but never taller than the
-        screen will take - which is the whole reason for the scrollbars."""
+        """Open at the size the page asks for, but never taller than the
+        screen will take - which is the whole reason for the scrollbar.
+
+        The page is now a tall one: controls, then the terminal, then the
+        brain's details. It will not fit on any screen and is not meant to,
+        any more than a web page is; it opens showing the top of itself and
+        the scrollbar reaches the rest.
+        """
         self.root.update()
-        want_w = min(self.cols.winfo_reqwidth(), int(self.root.winfo_screenwidth() * 0.98))
-        # The terminal is a fixed 15 lines at the bottom, so the scrolling
-        # area gets what is left of the screen rather than the whole of it -
-        # otherwise the window opens taller than the screen and the terminal
-        # is pushed off the bottom edge, which is where it is least useful.
-        room = int(self.root.winfo_screenheight() * 0.88) - self.terminal.height_needed()
-        want_h = min(self.cols.winfo_reqheight(), max(room, 200))
-        self.canvas.configure(width=want_w, height=want_h,
+        want_w = min(self.page.winfo_reqwidth(),
+                     int(self.root.winfo_screenwidth() * 0.98))
+        want_h = min(self.page.winfo_reqheight(),
+                     int(self.root.winfo_screenheight() * 0.86))
+        self.canvas.configure(width=want_w, height=max(want_h, 300),
                               scrollregion=self.canvas.bbox('all'))
 
     # ---- a control for everything the camera reported ----
@@ -614,6 +648,318 @@ class Window:
         # only ever show the latest thing.
         tk.Label(self.right, text=f'Error log: {LOG_FILE}', anchor='w', justify='left',
                  font=('Helvetica', 8), wraplength=310, fg='#555555').pack(fill='x', padx=6)
+
+    # ---- brain G's details, under the terminal ----
+
+    def build_brain_info(self):
+        """Everything about the brain that is doing the correcting.
+
+        This sits at the bottom of the page, under the scheduler's terminal,
+        and it is here because a trained model is otherwise completely opaque:
+        there is no way to tell from the picture whether the brain loaded,
+        whether it is the one that shipped or one retrained on this camera, or
+        whether it is any good. Every number it was judged on is on the
+        screen, including the score a flat "lift everything the same amount"
+        answer got, which is the only honest way to read the other numbers.
+        """
+        frame = tk.LabelFrame(self.page, text='  brain G - the night vision brain  ',
+                              font=('Helvetica', 9, 'bold'))
+        frame.pack(side='top', fill='x', padx=4, pady=(2, 6))
+        self.brain_frame = frame
+
+        bar = tk.Frame(frame)
+        bar.pack(fill='x')
+        self.brain_status = tk.Label(bar, text='reading the brain...', anchor='w',
+                                     font=('Helvetica', 8, 'bold'), fg='#003366')
+        self.brain_status.pack(side='left', padx=4)
+        tk.Button(bar, text='Refresh', font=('Helvetica', 8),
+                  command=self.refresh_brain_info).pack(side='right', padx=2)
+
+        # A read-only Text rather than a column of labels: the details run to
+        # twenty-odd lines and a Text lays them out in one monospaced block
+        # that lines up, without a widget per line.
+        body = tk.Frame(frame)
+        body.pack(fill='both', expand=True)
+        self.brain_text = tk.Text(body, width=TERMINAL_COLS, height=22, wrap='word',
+                                  font=('Monospace', 9), bg='#101820', fg='#cfd8dc',
+                                  highlightthickness=0, state='disabled')
+        self.brain_text.pack(side='left', fill='both', expand=True)
+        # The wheel bindings for the page are bind_all, so without these the
+        # wheel over this block would scroll the page behind it instead.
+        for sequence, amount in (('<Button-4>', -3), ('<Button-5>', 3)):
+            self.brain_text.bind(
+                sequence,
+                lambda e, n=amount: (self.brain_text.yview_scroll(n, 'units'), 'break')[1])
+        self.brain_text.bind(
+            '<MouseWheel>',
+            lambda e: (self.brain_text.yview_scroll(-3 if e.delta > 0 else 3, 'units'),
+                       'break')[1])
+        self.refresh_brain_info()
+
+    def brain_details(self):
+        """The status line and the block of detail, as (headline, text)."""
+        if not webcam_enhance:
+            return ('no enhancement module',
+                    'webcam_enhance.py was not found next to this file, so there '
+                    'is no image correction and no brain.\n')
+
+        brain = webcam_enhance._brain()
+        if brain is None:
+            why = getattr(webcam_enhance._brain, 'why', '') or 'no trained brain found'
+            looked = '\n'.join('    ' + d for d in webcam_enhance.brain_dirs())
+            return ('not loaded - the analytic correct is doing the work',
+                    f'Why: {why}\n\nLooked in, in this order:\n{looked}\n\n'
+                    'The analytic correct still runs, so the two switches above '
+                    'still do something - it works out one gamma from the whole '
+                    'frame rather than a gain for every pixel.\n\n'
+                    'To train the brain:\n'
+                    '    python3 train_webcam_brain.py --photos <folder of clear photos>\n')
+
+        model, meta, folder = brain
+
+        def line(label, value):
+            return f'  {label:<22} {value}\n'
+
+        units = meta.get('foundation_units') or []
+        val = meta.get('val_loss')
+        flat = meta.get('flat_answer_val_loss')
+        better = ''
+        if isinstance(val, (int, float)) and isinstance(flat, (int, float)) and flat:
+            better = f'  ({(1 - val / flat) * 100:.0f}% better than a flat answer)'
+
+        text = 'WHAT IT DOES\n'
+        text += ('  Predicts, for every pixel, how much to lift its brightness and\n'
+                 '  what to do with its colour afterwards. Trained on clear photos:\n'
+                 '  each one was darkened with a camera model and the brain learned\n'
+                 '  its way back to the original. A per-pixel gain is why a car in\n'
+                 '  shadow can be lifted hard while the light above it is left alone.\n\n')
+
+        text += 'MODEL\n'
+        text += line('architecture', meta.get('architecture', '?'))
+        text += line('features per pixel', meta.get('feature_count', '?'))
+        text += line('outputs', ', '.join(meta.get('outputs') or ['?']))
+        text += line('most it may lift', f'{meta.get("gain_max", "?")}x')
+        text += line('foundation', 'FROZEN, hand weighted, never trained')
+        if units:
+            text += '  frozen units\n'
+            for index, name in enumerate(units):
+                text += f'      {index}  {name}\n'
+        text += '\n'
+
+        text += 'TRAINING\n'
+        text += line('pretrain samples', f'{meta.get("pretrain_samples", "?")} '
+                                         f'(cap {meta.get("pretrain_cap", "?")})')
+        text += line('epochs run', f'{meta.get("epochs_run", "?")} of '
+                                   f'{meta.get("epochs_max", "?")}, early stopping '
+                                   f'on the held-back photos')
+        text += line('clear photos used', f'{meta.get("photos_trained_on", "?")} trained on, '
+                                          f'{meta.get("photos_held_back", "?")} held back')
+        text += line('photo folder', meta.get('photo_folder', '?'))
+        text += line('trained', meta.get('trained_at', '?'))
+        text += line('tensorflow', meta.get('tensorflow', '?'))
+        text += '\n'
+
+        text += 'HOW WELL IT DID\n'
+        text += line('val loss', f'{val:.5f}{better}' if isinstance(val, (int, float))
+                     else '?')
+        text += line('a flat answer scores', f'{flat:.5f}' if isinstance(flat, (int, float))
+                     else '?')
+        mae = meta.get('val_mae')
+        text += line('val mean error',
+                     f'{mae:.4f}' if isinstance(mae, (int, float)) else '?')
+        text += ('  The photos it was scored on were held back whole, not by pixel,\n'
+                 '  so no crop it trained on appears in the score.\n\n')
+
+        scored = meta.get('evaluation') or {}
+        if scored:
+            text += 'THE FINISHED PICTURE, ON THOSE SAME HELD-BACK PHOTOS\n'
+            text += ('  Eight degraded frames of each, run through the real pipeline\n'
+                     '  and compared with the clear original. Higher is better.\n\n')
+            text += f'    {"stage":<22}{"PSNR dB":>9}{"SSIM":>8}\n'
+            for key, label in (('dark_input', 'one dark frame'),
+                               ('stack_and_clahe', 'stacked + CLAHE'),
+                               ('analytic', '+ analytic correct'),
+                               ('brain', '+ brain G')):
+                peak = scored.get(f'{key}_psnr_db')
+                sim = scored.get(f'{key}_ssim')
+                if peak is None:
+                    continue
+                text += (f'    {label:<22}{peak:>9.2f}'
+                         + (f'{sim:>8.3f}' if sim is not None else f'{"-":>8}') + '\n')
+            gap = scored.get('brain_beats_analytic_db')
+            if gap is not None:
+                text += (f'\n  The brain is {gap:+.2f} dB on the analytic correct, which is\n'
+                         '  what runs when there is no brain to load.\n')
+            text += '\n'
+
+        text += 'ON DISK\n'
+        text += line('folder', folder)
+        digest = meta.get('model_sha256') or ''
+        text += line('sha256', (digest[:32] + '...') if digest else 'not recorded')
+        text += line('checked at load', 'feature count and sha256; a mismatch means '
+                                        'the analytic correct runs instead')
+        # The mode bits, not os.access: root can write to a 0444 file, so
+        # os.access would report a read-only model as writable when this runs
+        # as root and the line would be wrong exactly where it matters.
+        model_file = os.path.join(folder, 'model.keras')
+        try:
+            mode = os.stat(model_file).st_mode & 0o222
+        except OSError:
+            mode = -1
+        text += line('read-only', 'cannot tell' if mode < 0 else
+                     'yes - locked, and inference never writes to it' if mode == 0 else
+                     'writable (a git clone comes back this way); inference still '
+                     'never writes to it. To lock it: chmod 444 ' + model_file)
+        text += '\n'
+
+        text += 'RETRAIN IT ON THIS CAMERA\n'
+        text += ('  The brain that ships with this was trained on general photographs.\n'
+                 '  One trained on daytime stills from THIS camera knows this lens and\n'
+                 '  this sensor, and does better. Leave the 24 hour switch off, let the\n'
+                 '  picture folder fill through a sunny afternoon, copy those stills\n'
+                 '  somewhere, and run:\n\n'
+                 '    python3 train_webcam_brain.py --photos <that folder> --force\n')
+
+        headline = f'loaded from {folder}'
+        return (headline, text)
+
+    def refresh_brain_info(self):
+        """Re-read the brain and redraw the block.
+
+        Worth having a button for: retraining happens in a terminal while this
+        window is open, and this is how the window notices.
+        """
+        if webcam_enhance:
+            # Drop the cached load so a brain retrained since this window
+            # opened is picked up rather than the old one being reported.
+            webcam_enhance._brain.loaded = None
+        try:
+            headline, text = self.brain_details()
+        except Exception as problem:                           # noqa: BLE001
+            headline, text = ('could not read the brain', f'{problem}\n')
+        self.brain_status.configure(text=headline)
+        self.brain_text.configure(state='normal')
+        self.brain_text.delete('1.0', 'end')
+        self.brain_text.insert('end', text)
+        self.brain_text.configure(state='disabled')
+
+    # ---- night image enhancement ----
+
+    def build_enhance(self):
+        """The two switches for frame averaging, CLAHE and the ML auto
+        correct.
+
+        This is a different kind of thing from everything above it and is
+        worth keeping visually apart. Everything else in this window sends
+        values to the camera and so changes what gets recorded. This does not
+        touch the camera at all: it reads the stills in the snapshot folder,
+        averages the newest few to cancel the sensor noise, equalizes them
+        tile by tile, lifts what is left, and writes the result into an
+        `enhanced` folder beside them. The recording is unchanged - what this
+        gives is a far more readable set of stills of the same scene.
+        """
+        tk.Label(self.right, text='--- Night Image Enhancement ---',
+                 font=('Helvetica', 10, 'bold')).pack(pady=5)
+
+        if not webcam_enhance:
+            tk.Label(self.right, anchor='w', justify='left', font=('Helvetica', 8),
+                     wraplength=310,
+                     text='webcam_enhance.py was not found next to this file, so '
+                          'there is no image correction. Everything else still works.',
+                     ).pack(fill='x', padx=6)
+            return
+
+        tk.Label(
+            self.right, anchor='w', justify='left', font=('Helvetica', 8), wraplength=310,
+            text=('Works on the snapshots in the folder above, not on the camera: the '
+                  f'newest {webcam_enhance.STACK_FRAMES} stills are averaged together, '
+                  'which cancels most of the sensor noise, then CLAHE pulls detail out '
+                  'of the shadows a tile at a time and the auto correct lifts what is '
+                  'left. The corrected copies go in an "enhanced" folder beside the '
+                  'originals. The recording itself is not changed by this, and the '
+                  'light meter goes on measuring the camera\'s own stills.'),
+        ).pack(fill='x', padx=6)
+
+        boxes = tk.Frame(self.right)
+        boxes.pack(fill='x', padx=6, pady=2)
+        tk.Checkbutton(boxes, text='night image CLAHE and ML auto correct',
+                       variable=self.enh_night, font=('Helvetica', 8), anchor='w',
+                       command=self.on_enhance_toggle).pack(fill='x')
+        tk.Checkbutton(boxes, text='24 hour image CLAHE and ML auto correct',
+                       variable=self.enh_all_day, font=('Helvetica', 8), anchor='w',
+                       command=self.on_enhance_toggle).pack(fill='x')
+
+        tk.Label(self.right, anchor='w', justify='left', font=('Helvetica', 8),
+                 wraplength=310, fg='#555555',
+                 text=('The first box only runs it once the gain is past half its range, '
+                       'which is the same test the sharpness uses for night - a floodlit '
+                       'yard at midnight does not get it and an overcast dusk does. The '
+                       'second runs it on every still around the clock and overrides the '
+                       'first.'),
+                 ).pack(fill='x', padx=6)
+
+        tk.Label(self.right, text=self.enhancer_report(), anchor='w', justify='left',
+                 font=('Helvetica', 8), wraplength=310, fg='#003366').pack(fill='x', padx=6)
+
+        row = tk.Frame(self.right)
+        row.pack(fill='x', padx=6, pady=2)
+        tk.Button(row, text='Correct one now', font=('Helvetica', 8),
+                  command=self.on_enhance_now).pack(side='left')
+
+        self.enh_status = tk.Label(self.right, text=self.enhance_summary(), anchor='w',
+                                   justify='left', font=('Helvetica', 8), wraplength=310)
+        self.enh_status.pack(fill='x', padx=6)
+
+    def enhancer_report(self):
+        """What is installed for this, so a missing piece shows before it is
+        needed rather than as a silent lack of improvement."""
+        try:
+            return webcam_enhance.Enhancer().report()
+        except Exception as problem:                           # noqa: BLE001
+            return f'enhancement: {problem}'
+
+    def enhance_summary(self):
+        if self.enh_all_day.get():
+            return 'Correcting every snapshot, around the clock.'
+        if self.enh_night.get():
+            return 'Correcting snapshots once the gain says it is dark.'
+        return 'Image correction off - the snapshots are left as the camera wrote them.'
+
+    def on_enhance_toggle(self):
+        """Write both switches out, so the scheduler sees the change too."""
+        ok = webcam_enhance.write_settings(night=self.enh_night.get(),
+                                           all_day=self.enh_all_day.get())
+        text = self.enhance_summary()
+        if not ok:
+            text += f' (could not write {webcam_enhance.CONF_FILE})'
+        self.enh_status.configure(text=text)
+
+    def on_enhance_now(self):
+        """Correct the newest snapshot once, whatever the switches say.
+
+        Pressing the button is itself the instruction, so this does not check
+        them - it is how to see what the correction does to tonight's picture
+        before leaving it running on a schedule.
+        """
+        if not self.meter:
+            self.enh_status.configure(text='No light meter, so there is no snapshot folder')
+            return
+        frame = self.meter.find_snapshot()
+        if not frame:
+            note = f' - {self.meter.capture_note}' if self.meter.capture_note else ''
+            self.enh_status.configure(text=f'No snapshot to correct{note}')
+            return
+        try:
+            written, how = webcam_enhance.Enhancer().enhance_now(frame)
+        except Exception as problem:                           # noqa: BLE001
+            self.enh_status.configure(text=f'Could not correct it: {problem}')
+            return
+        if written:
+            self.enh_status.configure(
+                text=f'Wrote {os.path.basename(written)} in '
+                     f'{os.path.dirname(written)} - {how}')
+        else:
+            self.enh_status.configure(text=f'Could not correct it: {how}')
 
     def on_meter_toggle(self):
         # Clearing what the loop thinks it last wrote makes the next pass learn
