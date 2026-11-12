@@ -39,8 +39,17 @@ STAGES = [
     ('raw.ppm', 'before - as the camera gave it'),
     ('corrected.ppm', 'after - stacked, CLAHE, brain G'),
     ('boost-before.ppm', 'before - the corrected frame'),
-    ('boost-after.ppm', 'after - car/person found and lifted'),
+    ('boost-after.ppm', 'after - car/person found, boxed and lifted'),
+    ('crop-before.ppm', 'before - the car or person, close up'),
+    ('crop-after.ppm', 'after - the same crop, lifted'),
 ]
+
+# How the six are laid out in the window: two wide, three tall. The last row
+# is the close crop of whatever was found, which is the row that answers
+# whether the number plate or the face can actually be read - the two rows
+# above it only show that the correction ran.
+GRID_COLUMNS = 2
+GRID_ROWS = 3
 
 # Rectangle colours, named here only so the window can print a legend that
 # matches what webcam_detect.py actually draws.

@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 # First run: check the modules below are installed, and offer to install the
 # apt packages that provide them if they are not. Nothing is printed when
@@ -125,6 +126,12 @@ PREFERRED = [
 
 # The terminal at the bottom of the window: 80 columns by 15 lines, which is
 # an ordinary terminal's width and about a screenful of the scheduler's log.
+# How often the comparison frames are checked for a newer set, and how often
+# they are reloaded regardless. The check is six stat calls, so it can be
+# frequent; the reload reads and scales six JPEGs, so it should not be.
+COMPARE_POLL_MS = 3000
+COMPARE_FORCE_MS = 30000
+
 TERMINAL_COLS = 80
 TERMINAL_ROWS = 15
 
@@ -1310,19 +1317,31 @@ class Window:
             wraplength=740)
         self.compare_note.pack(fill='x', pady=(0, 2))
 
+        # Two wide and three tall. The first two rows are the whole frame -
+        # the correction, then what the detector did on top of it - and the
+        # third is the close crop of whatever was found, which is the row
+        # that answers whether the number plate or the face can be read.
         stages = webcam_status.STAGES if webcam_status else []
-        for row in (0, 1):
+        columns = getattr(webcam_status, 'GRID_COLUMNS', 2) if webcam_status else 2
+        rows = getattr(webcam_status, 'GRID_ROWS', 3) if webcam_status else 3
+        for row in range(rows):
             line = tk.Frame(pictures)
             line.pack(fill='x')
-            for column in (0, 1):
-                index = row * 2 + column
+            for column in range(columns):
+                index = row * columns + column
                 name, caption = (stages[index] if index < len(stages)
                                  else (f'slot{index}', ''))
                 cell = tk.Frame(line, bd=1, relief='sunken')
                 cell.pack(side='left', padx=(0, 6), pady=2)
-                picture = tk.Label(cell, text='(not written yet)',
+                # The crop row is shorter: a cut-out of a car is a wide thin
+                # thing and giving it the height of a whole frame would leave
+                # most of the cell empty.
+                height = 8 if name.startswith('crop-') else 12
+                blank = ('(nothing found to crop yet)'
+                         if name.startswith('crop-') else '(not written yet)')
+                picture = tk.Label(cell, text=blank,
                                    font=('Helvetica', 8), fg='#888888',
-                                   bg='#101010', width=46, height=12)
+                                   bg='#101010', width=46, height=height)
                 picture.pack()
                 tk.Label(cell, text=caption, font=('Helvetica', 8),
                          anchor='w', fg='#222222').pack(fill='x')
@@ -1340,7 +1359,7 @@ class Window:
         self.status_worker = None
         self.status_queue = queue.Queue()
         self.refresh_status_tile()
-        self.root.after(30000, self.poll_compare_frames)
+        self.root.after(COMPARE_POLL_MS, self.poll_compare_frames)
 
     def refresh_status_tile(self):
         """Run the checks off the main thread and redraw when they land.
@@ -1423,7 +1442,7 @@ class Window:
         return max(360, min(1600, width))
 
     def load_compare_frames(self):
-        """Rebuild the thumbnails and hang them on the four labels.
+        """Rebuild the thumbnails and hang them on the six labels.
 
         Written as PPM by webcam_status, which tkinter's own PhotoImage reads
         with nothing else installed - no Pillow, which is one more dependency
@@ -1445,8 +1464,13 @@ class Window:
             if label is None:
                 continue
             if not thumb['path']:
-                label.configure(image='', text='(not written yet)',
-                                fg='#888888')
+                # The crop pair is only written when something was actually
+                # found, so an empty one is an ordinary quiet night rather
+                # than a failure, and says so.
+                blank = ('(nothing found to crop yet)'
+                         if thumb['name'].startswith('crop-')
+                         else '(not written yet)')
+                label.configure(image='', text=blank, fg='#888888')
                 self.compare_images.pop(thumb['name'], None)
                 continue
             try:
@@ -1472,9 +1496,17 @@ class Window:
     def poll_compare_frames(self):
         """Pick up a newer set of frames without being asked.
 
-        The scheduler corrects a snapshot every few minutes while this window
-        sits open, and the point of the tile is to show the last one it did.
-        Only the file times are looked at, so a quiet night costs nothing.
+        Two things wanted here and they pull in opposite directions: show a
+        new set the moment it is written, and do not cost anything on a quiet
+        night when nothing is being written at all.
+
+        So this looks at the file times every few seconds - which is a stat
+        on six files and nothing else - and only loads when one of them has
+        moved. A set written between two polls is on the screen within
+        COMPARE_POLL_MS rather than waiting out a fixed half minute. Every
+        COMPARE_FORCE_MS it reloads anyway, whatever the times say, which
+        covers a clock that went backwards over a daylight saving change and
+        a file written twice inside the same second.
         """
         try:
             if webcam_status is not None:
@@ -1484,13 +1516,18 @@ class Window:
                     path = os.path.join(folder, name.replace('.ppm', '.jpg'))
                     if os.path.exists(path):
                         newest = max(newest, os.path.getmtime(path))
-                if newest and newest > getattr(self, 'compare_seen', 0):
-                    self.compare_seen = newest
+                now = time.time()
+                due = (now - getattr(self, 'compare_loaded_at', 0) >
+                       COMPARE_FORCE_MS / 1000.0)
+                if (newest and newest > getattr(self, 'compare_seen', 0)) or due:
+                    self.compare_seen = max(newest,
+                                            getattr(self, 'compare_seen', 0))
+                    self.compare_loaded_at = now
                     self.load_compare_frames()
         except Exception:                                      # noqa: BLE001
             pass
         finally:
-            self.root.after(30000, self.poll_compare_frames)
+            self.root.after(COMPARE_POLL_MS, self.poll_compare_frames)
 
     # ---- the error log ----
 

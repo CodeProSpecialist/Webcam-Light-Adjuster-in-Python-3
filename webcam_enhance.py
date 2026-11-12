@@ -884,12 +884,20 @@ class Enhancer:
                       detail='boxes not drawn on the comparison frame')
                 drawn = boosted
 
+        # The bottom row of the tile: the thing that was found, close up,
+        # before and after its own lift. The whole-frame rows show that the
+        # correction worked; this row is the one that answers whether the car
+        # can actually be read, which is the question being asked at all.
+        crop_before, crop_after = self._best_crop(corrected, boosted, boxes)
+
         quality = [int(cv2.IMWRITE_JPEG_QUALITY), 88]
         written = []
         for name, frame in (('raw.jpg', raw),
                             ('corrected.jpg', corrected),
                             ('boost-before.jpg', corrected),
-                            ('boost-after.jpg', drawn)):
+                            ('boost-after.jpg', drawn),
+                            ('crop-before.jpg', crop_before),
+                            ('crop-after.jpg', crop_after)):
             if frame is None:
                 continue
             try:
@@ -912,6 +920,39 @@ class Enhancer:
         except OSError:
             pass
         return target if written else ''
+
+
+    def _best_crop(self, corrected, boosted, boxes, margin=0.18):
+        """The best thing found, cut out of both frames at the same place.
+
+        The highest scoring box wins, and a margin is left around it because
+        the detector's idea of where a car ends is tighter than a person's and
+        a crop cut exactly on the box loses the number plate at the bottom
+        edge. Both crops come from the same rectangle so the two sit square
+        above one another in the window and can be compared by eye.
+
+        Nothing found means nothing to show: the window keeps the last pair
+        rather than being given a black rectangle, which looks like a failure
+        and is not one.
+        """
+        if not boxes:
+            return None, None
+        try:
+            best = max(boxes, key=lambda box: box.get('score', 0))
+            height, width = corrected.shape[:2]
+            pad_x = int(best['w'] * margin)
+            pad_y = int(best['h'] * margin)
+            x1 = max(0, best['x'] - pad_x)
+            y1 = max(0, best['y'] - pad_y)
+            x2 = min(width, best['x'] + best['w'] + pad_x)
+            y2 = min(height, best['y'] + best['h'] + pad_y)
+            if x2 - x1 < 8 or y2 - y1 < 8:
+                return None, None
+            return corrected[y1:y2, x1:x2].copy(), boosted[y1:y2, x1:x2].copy()
+        except Exception as problem:                          # noqa: BLE001
+            _oops('night correction', problem,
+                  detail='could not cut the close crop for the window')
+            return None, None
 
     def _brain_lift(self, brain, image):
         """Run brain G over the frame and apply what it asks for.

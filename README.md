@@ -777,18 +777,44 @@ a small piece of real work, run on the spot.
 
 ### The four frames
 
-Under the rows, the frames themselves, two to a row at the width of the
-terminal above them:
+Under the rows, the frames themselves - two wide and three tall, at the width
+of the terminal above them:
 
 ```
   before - as the camera gave it      after - stacked, CLAHE, brain G
-  before - the corrected frame        after - car/person found and lifted
+  before - the corrected frame        after - car/person found, boxed, lifted
+  before - the car or person close up after - the same crop, lifted
 ```
 
-The top row is the correction. The bottom row is the enhancement that runs on
+The top row is the correction. The middle row is the enhancement that runs on
 top of it, and its right-hand frame carries the boxes: **green for a person,
 blue for a car or other vehicle**, each with what the detector called it and
-how sure it was. The line above them says what the pass did and what it found.
+how sure it was.
+
+The bottom row is the one that matters most. It is the highest-scoring thing
+the detector found, cut out of both frames at the same place with a margin
+around it, so the question stops being "did the correction run" and becomes
+"can the number plate be read". Both crops come from the same rectangle, so
+they sit square above one another and can be compared by eye. Nothing found
+means that row stays as it was rather than going black - a quiet night is not
+a failure.
+
+The line above the pictures says what the pass did and what it found.
+
+### When they refresh
+
+The file times of the six frames are checked **every 3 seconds**, which is six
+stat calls and nothing else, so a new set is on the screen within a few
+seconds of being written rather than waiting out a fixed interval. **Every 30
+seconds** they are reloaded anyway, whatever the times say - which covers a
+clock that went backwards over a daylight saving change, and a frame written
+twice inside the same second.
+
+A picture-only refresh does not re-run the library checks. Importing
+TensorFlow takes several seconds and the libraries cannot have changed since
+the last picture, so re-checking them every few minutes all night would be
+seconds of work to confirm something that did not move. The Refresh button
+runs the full check.
 
 The order is the point. The detector runs last, on the corrected frame,
 because a detector looking at the raw night frame sees a black rectangle and
@@ -911,4 +937,4 @@ unattended. `WEBCAM_NO_BOOTSTRAP=1` skips the check entirely.
 | `webcam_status.py` | the status rows, and the four comparison thumbnails |
 | `webcam_errors.py` | the one log every OpenCV, TensorFlow, brain and correction failure goes to |
 | `~/Pictures/webcam/webcam-errors.log` | that log, rolled by size |
-| `~/Pictures/webcam/.../enhanced/compare/` | the four comparison frames the window shows |
+| `~/Pictures/webcam/.../enhanced/compare/` | the six comparison frames the window shows |
