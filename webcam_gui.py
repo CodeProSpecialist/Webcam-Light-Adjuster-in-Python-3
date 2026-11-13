@@ -17,10 +17,10 @@ one process holds /dev/video0 and everything else reads what it publishes, so
 the preview, the stills the brain trains on, and the recording never fight
 over the device.
 
-    python3 webcam_main.py
+    python3 webcam_gui.py
 
-The old entry point still works - python3 webcam_GUI.py opens the settings
-page on its own, exactly as before.
+The settings page still runs on its own - python3 webcam_settings_page.py opens
+it in a window of its own, exactly as it did when it was the whole program.
 """
 
 import os
@@ -56,7 +56,7 @@ except ImportError as problem:
     sys.exit(f'OpenCV is needed for the video window and is not installed '
              f'({problem}).\nTry:  pip3 install --break-system-packages '
              'opencv-python-headless\nThe settings page alone still runs:  '
-             'python3 webcam_GUI.py')
+             'python3 webcam_settings_page.py')
 
 import webcam_record                                              # noqa: E402
 import webcam_archive                                             # noqa: E402
@@ -1137,10 +1137,10 @@ class App:
         tk.Label(self.settings_host, text='opening the settings page...').pack()
         self.root.update_idletasks()
         try:
-            import webcam_GUI
+            import webcam_settings_page
             for child in self.settings_host.winfo_children():
                 child.destroy()
-            self.settings = webcam_GUI.Window(self.root,
+            self.settings = webcam_settings_page.Window(self.root,
                                               container=self.settings_host)
         except Exception as problem:                              # noqa: BLE001
             log_error(f'settings page: {problem}')
@@ -1149,8 +1149,9 @@ class App:
             tk.Label(self.settings_host, fg='#aa0000', wraplength=700,
                      justify='left',
                      text=('The settings page would not open:\n\n'
-                           f'{problem}\n\nwebcam_GUI.py still runs on its own '
-                           'with  python3 webcam_GUI.py')).pack(padx=10,
+                           f'{problem}\n\nwebcam_settings_page.py still runs on '
+                           'its own with  python3 webcam_settings_page.py'
+                           )).pack(padx=10,
                                                                 pady=10)
 
     def on_close(self):

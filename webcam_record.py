@@ -10,7 +10,7 @@ this program wants a frame from it:
   * a still a minute into the snapshot folder, which is what the light meter,
     the enhancer and the brain already read and train from,
   * a preview frame ten times a second, which is what the live video window in
-    webcam_main.py draws.
+    webcam_gui.py draws.
 
 One ffmpeg with three outputs off one input gives all three without ever
 opening a camera twice. Four cameras means four of those, each writing into

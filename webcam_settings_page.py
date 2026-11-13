@@ -20,7 +20,7 @@ stream - they are ioctls on the device node and can be set while another
 program is streaming, which is why any of this works at all.
 
     sudo apt-get -y install python3-tk v4l-utils imagemagick ffmpeg
-    python3 webcam_GUI.py
+    python3 webcam_settings_page.py
 """
 
 import os
@@ -528,7 +528,7 @@ class Window:
     the brain and the lock panel.
 
     It takes a container now as well as a root. Given one - which is what
-    webcam_main.py passes, the frame behind its Settings tab - the whole page
+    webcam_gui.py passes, the frame behind its Settings tab - the whole page
     is built inside that frame instead of filling a window of its own, and the
     title and the close handler are left alone because the window around it
     owns both. Given nothing, it behaves exactly as it always did and this

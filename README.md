@@ -14,7 +14,7 @@ trained on your own camera.
 ![The live video page: four camera panes, each with a REC mark while it is recording, above the camera slots and the recording settings](docs/live-video-page.png)
 
 ```
-python3 webcam_main.py
+python3 webcam_gui.py
 ```
 
 That is the whole start-up. It opens recording.
@@ -95,7 +95,7 @@ OpenCV, TensorFlow and astral.
 ```
 git clone https://github.com/CodeProSpecialist/Webcam-Light-Adjuster-in-Python-3.git
 cd Webcam-Light-Adjuster-in-Python-3
-python3 webcam_main.py
+python3 webcam_gui.py
 ```
 
 Two environment variables turn the bootstrap down: `WEBCAM_QUIET_INSTALL=1`
@@ -321,7 +321,8 @@ it reads every control off the camera, probes the brain and starts the
 scheduler's terminal - a second or two that should not sit in front of the
 video.
 
-`python3 webcam_GUI.py` still opens it on its own, exactly as before.
+`python3 webcam_settings_page.py` still opens it on its own, exactly as it
+did when it was the whole program.
 
 ## The schedule and the presets
 
@@ -498,10 +499,10 @@ and `WEBCAM_DEVICE` override them.
 
 | File | What it is |
 |---|---|
-| `webcam_main.py` | the main window: live video, archive, settings |
+| `webcam_gui.py` | the main window: live video, archive, settings |
 | `webcam_record.py` | the recorder, the janitor, and the headless CLI |
 | `webcam_archive.py` | the segment index, searching, and clip export |
-| `webcam_GUI.py` | the settings page, and still a program on its own |
+| `webcam_settings_page.py` | the settings page, and still a program on its own |
 | `webcam_presets.py` | the preset engine, with every value clamped |
 | `webcam_light_meter.py` | measuring the picture and adjusting the camera |
 | `webcam_enhance.py` | CLAHE and brain G, and the two switches |
