@@ -55,7 +55,7 @@ That is the whole start-up. It opens recording.
 
 | | |
 |---|---|
-| **Records** | 1 to 4 cameras, 1280x720 at 30fps, h264 in mp4, five-minute segments |
+| **Records** | 1 to 4 cameras, 1280x720 at 30fps, the camera's own MJPEG in mp4 with no re-encoding, five-minute segments |
 | **Loops** | recycles the oldest footage at 50, 100 or 250 GB, keeping 25 GB free |
 | **Indexes** | every segment, searchable by date, time of day, camera, length or note |
 | **Plays back** | 5fps slow motion through 30fps normal to 2 minutes a second |
@@ -137,11 +137,13 @@ times a second is real work - the archive keeps the full 1280x720 either way.
 
 Each camera gets one ffmpeg of its own, with one input and three outputs:
 
-1. **the archive** - h264 in mp4, cut into five-minute segments, each named
-   for the moment it starts (`2026-11-13_21-35-00.mp4`),
+1. **the archive** - the camera's own frames in mp4, cut into five-minute
+   segments, each named for the moment it starts
+   (`2026-11-13_21-35-00.mp4`),
 2. **a still a minute** into `~/Pictures/webcam-sample-images`, which is what
    the light meter, the enhancer and the brain read and train from,
-3. **a preview frame ten times a second**, which is what the pane draws.
+3. **a small preview frame four times a second**, which is what the pane
+   draws.
 
 One ffmpeg with three outputs off one input gives all three without ever
 opening a camera twice. That is the whole design: one process holds each
@@ -152,20 +154,46 @@ Segment names are why searching is cheap. The index reads a segment's start
 time off its name without opening the file, so a date search across eight
 thousand files costs nothing.
 
-**Encoder.** `h264` re-encodes to small files at some CPU cost, and is the
-default. `copy` passes the camera's own MJPEG through untouched - almost no
-CPU, about four times the disk.
+**Encoder.** `copy` is the default, and it is the whole reason this is cheap
+to run. The camera already hands over compressed MJPEG frames, so they are
+written to the file exactly as they arrive and nothing is encoded at all.
+This is the same trick Xeoma calls *direct saving to the archive*: do not
+decode and re-encode a stream that is already compressed. It costs almost no
+CPU and about four times the disk.
 
-**Rough sizes.** At 720p30 and CRF 23, expect roughly 1.5 to 2.5 GB an hour
-per camera depending on how much the scene moves. A still driveway at night
-compresses much harder than daytime with traffic. On `copy`, divide the hours
-by about four.
+`h264` is the other choice: it re-encodes to roughly a quarter of the disk,
+and spends about a core per camera to do it. Pick it when disk is tighter
+than CPU. A camera that only offers raw YUYV cannot be copied - there is
+nothing compressed to keep - so it is encoded whatever the setting says, with
+the fastest preset.
+
+An existing settings file from before this default changed is brought
+forward once, so a recorder that was quietly spending a core on h264 stops
+doing so. Pick `h264` yourself afterwards and that choice sticks.
+
+**The preview is the other half of it.** The live panes are fed by their own
+output at 4 frames a second, scaled to 640 wide before the frame is encoded.
+Xeoma does this with a camera's second, lower-resolution stream; a USB camera
+only has one stream, so the frames are thinned and shrunk instead. On a copy
+archive this preview branch is the only real work the process does, which is
+why it is deliberately small. Both are settings: raise `preview_fps` for a
+smoother window at a higher cost.
+
+**Rough sizes.** On the `copy` default, expect roughly 6 to 9 GB an hour per
+camera at 720p30 - MJPEG compresses each frame on its own and cannot lean on
+the one before it. On `h264` at CRF 23 it is nearer 1.5 to 2.5 GB an hour,
+depending on how much the scene moves; a still driveway at night compresses
+much harder than daytime with traffic.
 
 | Loop cap | One camera | Two cameras | Four cameras |
 |---|---|---|---|
-| 50 GB | about 1 day | about 12 hours | about 6 hours |
-| 100 GB | about 2 days | about 1 day | about 12 hours |
-| 250 GB | 4 to 6 days | 2 to 3 days | about 1.5 days |
+| 50 GB | about 7 hours | about 3 hours | about 1.5 hours |
+| 100 GB | about 13 hours | about 7 hours | about 3 hours |
+| 250 GB | about 1.5 days | about 16 hours | about 8 hours |
+
+Those are `copy` hours. On `h264`, multiply by about four. Either way the
+loop cap is what holds it: the archive never grows past the cap, it just
+holds fewer hours.
 
 ## The loop: how the disk is kept
 
@@ -224,8 +252,8 @@ It asks for confirmation first, and reports anything it could not delete.
 ## Several cameras
 
 Four slots, each a tick and a device picker. Four is the ceiling on purpose:
-four 720p30 h264 encodes is already a real load on a CPU, and four cameras on
-one USB controller is about where the bandwidth runs out too.
+four cameras on one USB controller is about where the bandwidth runs out,
+and on `h264` four encodes at 720p30 is a real load on a CPU.
 
 - **Each camera needs its own device.** Two recorders on one device is the
   "busy" failure, so a duplicate is dropped rather than accepted.
@@ -571,6 +599,12 @@ index has not caught up with what the recorder has written.
 recorder's state in `~/.cache/webcam` still names segments that no longer
 exist. Press **Open archive folder**, then **Delete Archive files to fix
 camera not recording errors**, and restart the program.
+
+**Recording is using too much CPU.** Check the **Video** setting on the live
+page. `copy` is the default and costs almost nothing; `h264` spends about a
+core per camera. If it is already on `copy` and the load is still high, the
+camera is probably raw-only, so its frames have to be encoded - and the
+preview is doing the rest, which `preview_fps` turns down.
 
 **The night correction is too dark.** Use the delete-and-retrain button in the
 settings page. The model is trained on your scene; if it learned the wrong

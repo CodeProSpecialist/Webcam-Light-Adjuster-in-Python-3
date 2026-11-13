@@ -269,12 +269,12 @@ class LivePage(tk.Frame):
         self.encoder_var = tk.StringVar()
         ttk.Combobox(box, textvariable=self.encoder_var, width=30,
                      state='readonly',
-                     values=['h264  (small files, some CPU)',
-                             'copy  (camera mjpeg, no CPU, ~4x disk)']
+                     values=['copy  (no CPU, ~4x disk)  - default',
+                             'h264  (small files, a core per camera)']
                      ).grid(row=1, column=5, sticky='w', padx=4)
-        self.encoder_var.set('h264  (small files, some CPU)'
+        self.encoder_var.set('h264  (small files, a core per camera)'
                              if settings.get('encoder') != 'copy'
-                             else 'copy  (camera mjpeg, no CPU, ~4x disk)')
+                             else 'copy  (no CPU, ~4x disk)  - default')
         tk.Button(box, text='Apply', width=10, command=self.on_apply
                   ).grid(row=1, column=6, padx=6)
 

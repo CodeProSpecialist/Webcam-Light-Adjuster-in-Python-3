@@ -113,7 +113,14 @@ MAX_CAMERAS = 4                # four is the ceiling on purpose: four 720p30
                                # and four of them on one USB controller is
                                # about where the bandwidth runs out too
 STILL_EVERY_SECONDS = 60       # one still a minute into the snapshot folder
-PREVIEW_FPS = 10               # what the live window draws
+PREVIEW_FPS = 4                # what the live window draws. Four a second
+                               # reads as live to an eye watching a driveway,
+                               # and each frame skipped is a decode and a jpeg
+                               # encode not paid for.
+PREVIEW_WIDTH = 640            # and at 640 wide, not the camera's full size:
+                               # the panes are smaller than that anyway, and
+                               # scaling down before the jpeg is cheaper than
+                               # encoding a full-size one
 
 SEGMENT_NAME = '%Y-%m-%d_%H-%M-%S.mp4'
 SEGMENT_RE = re.compile(r'^(\d{4})-(\d\d)-(\d\d)_(\d\d)-(\d\d)-(\d\d)\.mp4$')
@@ -132,11 +139,18 @@ DEFAULTS = {
     'keep_free_gb': KEEP_FREE_GB,
     'max_archive_gb': MAX_ARCHIVE_GB,
     'archive_dir': ARCHIVE_DIR,
-    'encoder': 'h264',         # 'h264' re-encodes small; 'copy' keeps the
-                               # camera's own mjpeg, costs no CPU, eats disk
+    'encoder': 'copy',         # the default, and the reason the recorder is
+                               # cheap: 'copy' writes the camera's own mjpeg
+                               # frames straight to disk, so nothing is
+                               # encoded at all. 'h264' re-encodes to roughly
+                               # a quarter the disk, and costs a core per
+                               # camera to do it.
     'crf': 23,
     'still_every_seconds': STILL_EVERY_SECONDS,
     'preview_fps': PREVIEW_FPS,
+    'preview_width': PREVIEW_WIDTH,
+    'defaults_version': 2,     # bumped when a default changes in a way that
+                               # should reach a conf file already on disk
 }
 
 
@@ -154,6 +168,15 @@ def read_settings():
         for key, value in saved.items():
             if key in settings:
                 settings[key] = value
+        # The cheap-recording defaults arrived after this conf format did, so
+        # a conf written before them still says h264 and a ten-a-second
+        # preview - which is the expensive combination the new defaults exist
+        # to avoid. A conf from before that change is brought forward once,
+        # and marked, so a later deliberate choice of h264 is left alone.
+        if int(saved.get('defaults_version', 0)) < 2:
+            settings['encoder'] = DEFAULTS['encoder']
+            settings['preview_fps'] = DEFAULTS['preview_fps']
+            settings['preview_width'] = DEFAULTS['preview_width']
     settings['cameras'] = clean_cameras(settings.get('cameras'),
                                         settings.get('device'))
     settings['device'] = settings['cameras'][0]
@@ -334,8 +357,14 @@ def build_command(settings, record=True, index=1):
             # file. Costs almost no CPU and roughly four times the disk.
             video = ['-c:v', 'copy']
         else:
+            # A raw-only camera cannot be copied - there is nothing in the
+            # stream worth keeping as-is - so it is encoded even when copy
+            # was asked for. In that case ultrafast, because the point of
+            # asking for copy was to not spend a core on this.
+            preset = ('ultrafast' if settings.get('encoder') == 'copy'
+                      else 'veryfast')
             video = [
-                '-c:v', 'libx264', '-preset', 'veryfast',
+                '-c:v', 'libx264', '-preset', preset,
                 '-crf', str(int(settings.get('crf', 23))),
                 '-pix_fmt', 'yuv420p',
                 '-g', str(fps * 2),
@@ -373,10 +402,18 @@ def build_command(settings, record=True, index=1):
 
     # The preview the live window draws, overwritten in place.
     os.makedirs(STATE_DIR, exist_ok=True)
+    #
+    # Scaled down and slowed first, then encoded. The order matters: fps
+    # before scale throws frames away before any work is done on them, and
+    # scale before the jpeg encoder means the encoder is handed a 640-wide
+    # picture rather than a 1280-wide one. On a copy archive this branch is
+    # the only real work the process does.
+    preview_w = max(160, int(settings.get('preview_width', PREVIEW_WIDTH)))
     cmd += [
         '-map', '0:v',
-        '-vf', f"fps={int(settings.get('preview_fps', PREVIEW_FPS))}",
-        '-q:v', '6', '-update', '1', '-f', 'image2',
+        '-vf', (f"fps={int(settings.get('preview_fps', PREVIEW_FPS))},"
+                f"scale={preview_w}:-2"),
+        '-q:v', '7', '-update', '1', '-f', 'image2',
     ] + _image2_atomic() + [preview_file(index)]
     return cmd
 
