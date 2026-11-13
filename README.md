@@ -209,6 +209,8 @@ window of its own:
 > to that archive need to also be deleted and the program needs to be
 > restarted to begin recording onto a new archive.
 
+![The archive folder notice, with the delete-and-restart button under it](docs/archive-notice.png)
+
 Under that notice is the repair:
 
 - **Delete Archive files to fix camera not recording errors** - stops
@@ -585,5 +587,6 @@ overwrite the files:
 | `docs/live-video-page.png` | the Live video page with several cameras recording |
 | `docs/one-camera-live.png` | the Live video page with one camera |
 | `docs/archive-page.png` | the Archive page, mid-playback, with results listed |
+| `docs/archive-notice.png` | the notice window that **Open archive folder** opens |
 
 No markdown needs changing - the README references those paths already.
