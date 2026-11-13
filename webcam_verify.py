@@ -303,6 +303,9 @@ def main():
         except IndexError:
             pass
 
+    if '--coverage' in args:
+        return print_coverage()
+
     if '--measure' in args:
         path, _when = newest_snapshot()
         shot = measure(path)
@@ -341,6 +344,129 @@ def main():
     ok, why, rounds = guard(preset, device)
     print(f'{"OK " if ok else "BAD"}  {why} (after {rounds} rounds)')
     return 0 if ok else 1
+
+
+
+
+# ------------------------------------------------- is the whole day covered
+
+
+# Every mode the camera runs in across a day, in the order they happen.
+ALL_PRESETS = ['golden_am', 'day', 'bright_sun', 'golden_pm', 'night',
+               'night_mono']
+
+
+def _enhance_module():
+    try:
+        import webcam_enhance                                 # noqa: PLC0415
+    except ImportError:
+        return None
+    return webcam_enhance
+
+
+def would_correct():
+    """Which modes the switches currently correct, and why.
+
+    This is the question underneath "is the whole day covered": not whether
+    corrected frames happen to exist on disk, but whether the settings as
+    they stand would correct a frame arriving now, in each mode.
+    """
+    enhance = _enhance_module()
+    if enhance is None:
+        return {}, 'webcam_enhance.py is not importable'
+    settings = enhance.read_settings()
+    if settings.get(enhance.KEY_ALL_DAY):
+        return ({name: True for name in ALL_PRESETS},
+                '24 hour correction is on - every mode is corrected')
+    if settings.get(enhance.KEY_NIGHT):
+        covered = {name: name.startswith('night') for name in ALL_PRESETS}
+        return (covered, 'only the night switch is on - the daylight modes '
+                         'are left uncorrected')
+    return ({name: False for name in ALL_PRESETS},
+            'both correction switches are off - nothing is corrected')
+
+
+def _hour_counts(folder, enhanced_name='enhanced'):
+    """Stills per hour of the day, and corrected copies per hour.
+
+    Counted by hour of day rather than by file, because the corrected copy is
+    named for when it was written and not for its source, so there is no
+    one-to-one pairing to be had. An hour with stills and no corrected copies
+    is the gap worth seeing, and that this does show.
+    """
+    stills = [0] * 24
+    done = [0] * 24
+    if not folder or not os.path.isdir(folder):
+        return stills, done
+    for root, _dirs, files in os.walk(folder):
+        corrected = (os.sep + enhanced_name) in root + os.sep
+        if os.sep + 'compare' in root + os.sep or os.sep + 'thumbs' in root:
+            continue
+        for name in files:
+            if not name.lower().endswith(('.jpg', '.jpeg')):
+                continue
+            try:
+                hour = time.localtime(
+                    os.path.getmtime(os.path.join(root, name))).tm_hour
+            except OSError:
+                continue
+            (done if corrected else stills)[hour] += 1
+    return stills, done
+
+
+def coverage(folder=None):
+    """The whole answer: what the switches cover, what has actually been
+    corrected per mode, and which hours of the day have stills with nothing
+    corrected in them."""
+    covered, why = would_correct()
+
+    harvested = {}
+    try:
+        import train_webcam_brain                             # noqa: PLC0415
+        for frame in train_webcam_brain.read_index().get('frames', []):
+            name = frame.get('preset') or 'unknown'
+            harvested[name] = harvested.get(name, 0) + 1
+    except Exception:                                         # noqa: BLE001
+        harvested = {}
+
+    if folder is None:
+        path, _when = newest_snapshot()
+        folder = os.path.dirname(path) if path else ''
+    stills, done = _hour_counts(folder)
+
+    gaps = [hour for hour in range(24) if stills[hour] and not done[hour]]
+    return {'covered': covered, 'why': why, 'harvested': harvested,
+            'stills': stills, 'done': done, 'gaps': gaps, 'folder': folder}
+
+
+def print_coverage():
+    report = coverage()
+    print(report['why'])
+    print()
+    print('  mode          corrected   frames harvested')
+    for name in ALL_PRESETS:
+        mark = 'yes' if report['covered'].get(name) else 'NO '
+        print(f"  {name:<14}{mark:<12}{report['harvested'].get(name, 0)}")
+    missing = [n for n in ALL_PRESETS if n not in report['harvested']]
+    if missing:
+        print(f"\n  no frames harvested yet from: {', '.join(missing)}")
+        print('  (a mode that has not come round yet is not a fault - '
+              'bright sun and golden PM only happen in their own hour)')
+
+    print(f"\n  stills by hour, in {report['folder'] or '(no folder found)'}")
+    rows = [(h, report['stills'][h], report['done'][h]) for h in range(24)
+            if report['stills'][h] or report['done'][h]]
+    if not rows:
+        print('    nothing on disk yet')
+    for hour, raw, fixed in rows:
+        flag = '  <- stills but nothing corrected' if raw and not fixed else ''
+        print(f'    {hour:02d}:00  {raw:5d} stills  {fixed:5d} corrected{flag}')
+    if report['gaps']:
+        print(f"\n  hours with stills and no corrected copy: "
+              f"{', '.join(f'{h:02d}:00' for h in report['gaps'])}")
+    else:
+        print('\n  every hour that has stills has corrected copies too')
+    return 0 if not report['gaps'] else 1
 
 
 if __name__ == '__main__':

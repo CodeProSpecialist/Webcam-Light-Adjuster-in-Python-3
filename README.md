@@ -1039,6 +1039,69 @@ python3 webcam_verify.py --readback night    # did the preset's values stick
 python3 webcam_verify.py --guard night       # measure, and walk back if crushed
 ```
 
+## Is the whole day corrected?
+
+Yes, by default, from the stills - and there is a command that checks rather
+than asserting it.
+
+Every mode the camera runs in across a day produces stills, and all of them
+are worth correcting. The daylight ones are not dark, but they are flat, and
+the same stack-CLAHE-brain G chain is what the detector has to work with
+afterwards. Correcting only at night left two thirds of the day untouched and
+made the training corpus lopsided, because the brain only ever saw the frames
+it had already been used on.
+
+So **24 hour correction is on by default**, and so is the detector. Snapshots
+are the source: the recorder writes them anyway, so sampling them costs
+nothing and does not touch the camera.
+
+```
+python3 webcam_verify.py --coverage
+```
+
+```
+24 hour correction is on - every mode is corrected
+
+  mode          corrected   frames harvested
+  golden_am     yes         412
+  day           yes         1130
+  bright_sun    yes         208
+  golden_pm     yes         377
+  night         yes         1562
+  night_mono    yes         0
+
+  stills by hour, in /home/.../program-snapshots-for-auto-adjust-picture
+    00:00    180 stills    180 corrected
+    01:00    180 stills    180 corrected
+    ...
+  every hour that has stills has corrected copies too
+```
+
+It answers two different questions, which is the point of it. **Would** a
+frame arriving now in each mode be corrected - that is the switches. And
+**has** each hour of the day actually got corrected copies on disk - that is
+the files. A mode can be switched on and still have nothing on disk simply
+because its hour has not come round; bright sun and golden PM only happen in
+their own hour, and the report says so rather than calling it a fault. It
+exits non-zero when an hour has stills and nothing corrected, so it can be
+run from cron.
+
+### Optionally, the stream as well
+
+The stills are the default source. **Sampling the camera stream is the
+option on top, and it is off** - the last of the correction checkboxes, or
+`sample_the_stream=1` in the conf file, with `sample_seconds` for how often.
+
+Off because of how the camera is shared. A V4L2 camera streams to one program
+at a time, and the recorder holds it nearly always, so going to the device
+means asking for something that is usually refused. This used to happen on
+every pass of the light meter, unasked - opening a device the recorder held,
+every twenty seconds, all day, to be told it was busy. Now it only happens if
+you ask for it, and then at its own interval of minutes rather than the
+meter's twenty seconds, because a frame off the stream is a bonus sample
+rather than something the correction depends on. Where nothing else holds the
+camera it is genuinely useful, which is why it is still there.
+
 ## Files
 
 | File | What it is |

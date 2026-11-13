@@ -101,6 +101,15 @@ KEY_ALL_DAY = 'all_day_clahe_ml'
 # corrected at all, because the detector needs the correction to see.
 KEY_DETECT = 'detect_and_boost'
 
+# Optional, off by default: as well as the stills the recorder writes, open
+# the camera every so often and correct a frame straight off the stream. The
+# stills are the default source and cost nothing, because something else is
+# writing them anyway; this goes to the device, which is usually held by the
+# recorder, so it is opt-in and gives up quietly when the camera is busy.
+KEY_SAMPLE_STREAM = 'sample_the_stream'
+KEY_SAMPLE_SECONDS = 'sample_seconds'
+DEFAULT_SAMPLE_SECONDS = 300
+
 # Where the brain's training frames come from. Two switches, because the two
 # sources are not the same kind of thing and a camera that is held by the
 # recorder can only offer the first of them.
@@ -306,14 +315,33 @@ _brain.why = ''
 
 
 def read_settings():
-    """The two switches, as they stand on disk. Both off when there is no
-    file - which is how this behaved before it existed."""
-    # The picture folder is the sane default for training, so it starts on
-    # rather than off: a brain trained on this camera's own frames is the point
-    # of the harvest, and a conf file written before these two switches existed
-    # should not silently mean "never train".
-    settings = {KEY_NIGHT: False, KEY_ALL_DAY: False, KEY_DETECT: False,
-                KEY_TRAIN_PICTURES: True, KEY_TRAIN_CAMERA: False}
+    """The switches, as they stand on disk, with their defaults underneath.
+
+    The 24 hour correction starts **on**. Every preset across the day -
+    night, night mono, golden AM, day, bright sun, golden PM - produces
+    stills, and all of them are worth correcting: the daylight ones are not
+    dark but they are flat, and the same stack-CLAHE-brain G chain is what
+    the detector then has to work with. Correcting only at night left two
+    thirds of the day untouched and made the corpus lopsided, because the
+    brain only ever saw the frames it had already been used on.
+
+    Object detection starts on with it, since boosting a car or a person is
+    the point of correcting the frame at all, and it is wanted in daylight
+    too and not only in the dark.
+
+    Stream sampling starts **off**, deliberately. The stills are the default
+    source and they cost nothing: the recorder is writing them anyway. Going
+    to the camera directly means opening a device that something else is
+    usually holding, so it stays opt-in.
+
+    A conf file written before any of these keys existed falls back to these
+    same defaults for the keys it does not mention, so an old file means
+    "corrected" rather than silently meaning "never corrected".
+    """
+    settings = {KEY_NIGHT: False, KEY_ALL_DAY: True, KEY_DETECT: True,
+                KEY_TRAIN_PICTURES: True, KEY_TRAIN_CAMERA: False,
+                KEY_SAMPLE_STREAM: False,
+                KEY_SAMPLE_SECONDS: DEFAULT_SAMPLE_SECONDS}
     try:
         with open(CONF_FILE, encoding='utf-8') as handle:
             for line in handle:
@@ -321,7 +349,15 @@ def read_settings():
                     continue
                 key, _, value = line.partition('=')
                 key = key.strip()
-                if key in settings:
+                if key == KEY_SAMPLE_SECONDS:
+                    # The one setting here that is a number rather than a
+                    # switch. A bad value falls back to the default instead
+                    # of stopping the correction over a typo.
+                    try:
+                        settings[key] = max(30, int(value.strip()))
+                    except ValueError:
+                        pass
+                elif key in settings:
                     settings[key] = value.strip() in ('1', 'true', 'True', 'yes', 'on')
     except OSError:
         pass
@@ -329,7 +365,8 @@ def read_settings():
 
 
 def write_settings(night=None, all_day=None, detect=None,
-                   train_pictures=None, train_camera=None):
+                   train_pictures=None, train_camera=None,
+                   sample_stream=None, sample_seconds=None):
     """Change any of the switches, leaving the others as they were."""
     settings = read_settings()
     if night is not None:
@@ -342,6 +379,15 @@ def write_settings(night=None, all_day=None, detect=None,
         settings[KEY_TRAIN_PICTURES] = bool(train_pictures)
     if train_camera is not None:
         settings[KEY_TRAIN_CAMERA] = bool(train_camera)
+    if sample_stream is not None:
+        settings[KEY_SAMPLE_STREAM] = bool(sample_stream)
+    if sample_seconds is not None:
+        # Floored rather than rejected: a one-second interval would mean
+        # fighting the recorder for the camera continuously.
+        try:
+            settings[KEY_SAMPLE_SECONDS] = max(30, int(sample_seconds))
+        except (TypeError, ValueError):
+            pass
     try:
         with open(CONF_FILE, 'w', encoding='utf-8') as handle:
             handle.write('# Written by the webcam settings window. Two switches:\n')
@@ -351,8 +397,14 @@ def write_settings(night=None, all_day=None, detect=None,
             handle.write('# And where the brain trains from:\n')
             handle.write('#   train the brain from the picture folder\n')
             handle.write('#   train the brain direct from the detected webcamera\n')
+            handle.write('# Optionally, as well as the stills:\n')
+            handle.write('#   sample a frame off the camera stream, '
+                         'and how often in seconds\n')
             for key, value in settings.items():
-                handle.write(f'{key}={1 if value else 0}\n')
+                if key == KEY_SAMPLE_SECONDS:
+                    handle.write(f'{key}={int(value)}\n')
+                else:
+                    handle.write(f'{key}={1 if value else 0}\n')
     except OSError:
         return False
     return True

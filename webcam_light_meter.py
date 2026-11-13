@@ -50,8 +50,16 @@ import time
 # the file missing, everything here carries on exactly as before.
 try:
     from webcam_enhance import Enhancer
+    # The stream sampling switch lives with the other correction settings,
+    # so that one file is the whole of what the correction is doing.
+    from webcam_enhance import (read_settings, KEY_SAMPLE_STREAM,
+                                KEY_SAMPLE_SECONDS, DEFAULT_SAMPLE_SECONDS)
 except ImportError:                                            # noqa: BLE001
     Enhancer = None
+    read_settings = None
+    KEY_SAMPLE_STREAM = 'sample_the_stream'
+    KEY_SAMPLE_SECONDS = 'sample_seconds'
+    DEFAULT_SAMPLE_SECONDS = 300
 
 # The brain's own module: it owns the harvest that builds a training set out of
 # this camera's frames, and the retraining that uses it. Importing it does not
@@ -657,6 +665,29 @@ class LightMeter:
                 return ', '.join(sorted(names))
         return None
 
+    def sampling_wanted(self):
+        """Whether to open the camera this pass.
+
+        Off unless the stream sampling switch is on, and then no more often
+        than its own interval - which is minutes, not the twenty seconds the
+        meter runs at, because a frame off the stream is a bonus sample and
+        not the thing the correction depends on.
+        """
+        if read_settings is None:
+            return False
+        try:
+            settings = read_settings()
+        except Exception:                                      # noqa: BLE001
+            return False
+        if not settings.get(KEY_SAMPLE_STREAM):
+            return False
+        try:
+            every = int(settings.get(KEY_SAMPLE_SECONDS,
+                                     DEFAULT_SAMPLE_SECONDS))
+        except (TypeError, ValueError):
+            every = DEFAULT_SAMPLE_SECONDS
+        return time.time() - getattr(self, 'last_sample', 0) >= max(30, every)
+
     def capture_snapshot(self):
         """Grab one frame into the snapshot folder with ffmpeg. Returns the
         path, or None when the camera is busy, ffmpeg is missing, or there is
@@ -887,9 +918,20 @@ class LightMeter:
             self.hold -= 1
             return f'light meter: trim {self.trim:+d}, waiting for the picture to catch up'
 
-        # Take one of our own first. When the recording software has the
-        # camera this does nothing and the still it wrote is used instead.
-        self.capture_snapshot()
+        # The stills the recorder writes are the default source, and they
+        # cost nothing: something else is writing them anyway. Going to the
+        # camera ourselves is the option on top, off unless asked for.
+        #
+        # It used to grab every pass, unasked. On this setup that meant
+        # opening a device the recorder holds, every twenty seconds, all day,
+        # to be told it was busy - noise, and contention for a camera that
+        # only one program can stream at a time. Where nothing else holds the
+        # camera the grab is useful, so it stays available; it is just not
+        # the default any more, and it has an interval of its own rather than
+        # running at the meter's rate.
+        if self.sampling_wanted():
+            self.capture_snapshot()
+            self.last_sample = time.time()
 
         frame = self.find_snapshot()
         measured = self.measure(frame)

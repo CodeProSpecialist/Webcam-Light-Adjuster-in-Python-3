@@ -523,10 +523,16 @@ class Window:
         saved = webcam_enhance.read_settings() if webcam_enhance else {}
         self.enh_night = tk.BooleanVar(value=bool(saved.get(
             getattr(webcam_enhance, 'KEY_NIGHT', ''), False)))
+        # These two default to on, matching read_settings: every mode across
+        # the day is corrected unless something turns it off.
         self.enh_all_day = tk.BooleanVar(value=bool(saved.get(
-            getattr(webcam_enhance, 'KEY_ALL_DAY', ''), False)))
+            getattr(webcam_enhance, 'KEY_ALL_DAY', ''), True)))
         self.enh_detect = tk.BooleanVar(value=bool(saved.get(
-            getattr(webcam_enhance, 'KEY_DETECT', ''), False)))
+            getattr(webcam_enhance, 'KEY_DETECT', ''), True)))
+        # The optional extra source: a frame taken off the camera itself,
+        # rather than from the stills the recorder writes. Off by default.
+        self.enh_sample = tk.BooleanVar(value=bool(saved.get(
+            getattr(webcam_enhance, 'KEY_SAMPLE_STREAM', ''), False)))
         # Where the brain trains from. The picture folder defaults to on, for
         # the reason read_settings gives: a conf file written before these two
         # switches existed should not silently mean "never train".
@@ -1840,6 +1846,12 @@ class Window:
         tk.Checkbutton(boxes, text='find cars and people and enhance them',
                        variable=self.enh_detect, font=('Helvetica', 8), anchor='w',
                        command=self.on_enhance_toggle).pack(fill='x')
+        tk.Checkbutton(boxes,
+                       text='also sample the camera stream now and then '
+                            '(optional)',
+                       variable=self.enh_sample, font=('Helvetica', 8),
+                       anchor='w',
+                       command=self.on_enhance_toggle).pack(fill='x')
 
         tk.Label(self.right, anchor='w', justify='left', font=('Helvetica', 8),
                  wraplength=310, fg='#555555',
@@ -1847,7 +1859,13 @@ class Window:
                        'which is the same test the sharpness uses for night - a floodlit '
                        'yard at midnight does not get it and an overcast dusk does. The '
                        'second runs it on every still around the clock and overrides the '
-                       'first.\n\n'
+                       'first, and is on by default so that every mode of the day is '
+                       'corrected.\n\n'
+                       'The last box is the optional extra: as well as the stills, open '
+                       'the camera every few minutes and correct a frame straight off '
+                       'the stream. The stills cost nothing because the recorder writes '
+                       'them anyway; this opens a device the recorder usually holds, so '
+                       'it is off unless you want it.\n\n'
                        'The third looks for cars and people in the corrected still and '
                        'gives them a second, stronger lift of their own, saving a close '
                        'crop of each into an "detections" folder. It runs after the '
@@ -1889,9 +1907,10 @@ class Window:
 
     def on_enhance_toggle(self):
         """Write both switches out, so the scheduler sees the change too."""
-        ok = webcam_enhance.write_settings(night=self.enh_night.get(),
-                                           all_day=self.enh_all_day.get(),
-                                           detect=self.enh_detect.get())
+        ok = webcam_enhance.write_settings(
+            night=self.enh_night.get(), all_day=self.enh_all_day.get(),
+            detect=self.enh_detect.get(),
+            sample_stream=self.enh_sample.get())
         text = self.enhance_summary()
         if not ok:
             text += f' (could not write {webcam_enhance.CONF_FILE})'
