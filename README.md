@@ -327,9 +327,33 @@ light controls away from the preset's own values by a trim of −5 to +5 steps:
 * **brightness** moves least, since on these webcams it is a black level lift
   rather than exposure
 * **contrast** rises with the trim to keep the range spread out
-* **saturation** comes *down* as the trim goes up, so there is colour day and
-  night, with less of it at night where most of what is left is noise
 * **backlight compensation** rises with the trim
+
+Saturation used to be in that list, coming down as the trim went up. It is out
+now. The colour level a preset asks for is the colour level wanted at that
+hour, and a meter quietly walking it down five steps into the night is the
+meter overruling the preset about how the picture should look - the colour
+wanted at night belongs in the night preset, where it can be seen and changed.
+
+**Three controls the correction is not allowed to touch at all.** Saturation
+and hue belong to the preset outright: they decide what the colours *are*, not
+how bright the frame is, and no amount of measuring the grey level is evidence
+about either. Gamma is the awkward one and gets a rule of its own - it does
+change brightness, which is exactly why it is tempting, and raising it is the
+cheapest-looking way to brighten a night frame. It is also the worst: gamma
+lifts the noise floor along with the shadows and flattens the midtones a number
+plate lives in, and it does it to the stream the recorder is writing rather
+than to a copy. So **gamma may be left where the preset put it or pulled back
+down from there, and never raised above it.** A gamma lift belongs in the
+software correction further down this page, which works on copies of the stills
+and can be deleted and redone.
+
+Nothing in the loop writes those three, so in normal running the guard finds
+nothing and costs one read. It is there for the case that is not normal
+running: another program, a half-finished preset, or a driver that resets a
+control when the exposure mode changes. Without it, a gamma raised once would
+stay raised for the rest of the night with the correction dutifully metering
+around it.
 
 When a preset fires, or a control is moved by hand, the loop notices the
 settings are not what it last wrote and re-learns them as its new baseline,
@@ -371,7 +395,15 @@ of the scheduler sitting blind for the whole 20.
 
 Sharpness is set outright rather than trimmed, and it overrides whatever the
 preset asked for: full sharpness in daylight and through the golden hours,
-eased to 80-90% of the control's range at night.
+eased off at night to reduce grain.
+
+**It is clamped to 50-100% of the control's range**, whatever the curve works
+out and whatever a preset asked for. The floor is the useful half of that.
+Sharpening amplifies grain, so the honest night answer looks like "turn it
+down" - and turned down far enough, the picture is a smooth grey blur with no
+edge left to read a number plate off: grain-free and useless. Half is the point
+below which easing off stops buying anything. The ceiling only says there is no
+such thing as more than all of a control.
 
 What decides night from day is gain rather than the clock. Gain is the only
 control that amplifies sensor noise along with the signal, so a camera near the
@@ -429,19 +461,44 @@ without end.
 
 Continuous autofocus is on at all times, and nothing in these programs ever
 leaves the camera in manual focus. Every preset ends by switching autofocus off
-and straight back on, and so does every correction the light meter makes.
+and straight back on, which starts a fresh search - setting the control to 1
+when it is already 1 does nothing. There is a third of a second between the two
+writes, because the driver has to see the control actually change state; land
+both in the same instant and nothing is re-triggered.
 
-That toggle is the point of it. Changing gain, brightness or contrast changes
-what the autofocus is looking at, and the camera does not always re-run its
-search on its own - so the first seconds after a light change come out soft and
-out of focus, which on a recording is exactly the part you want sharp. Setting
-the control to 1 when it is already 1 does nothing; turning it off and back on
-starts a fresh search. There is a third of a second between the two writes,
-because the driver has to see the control actually change state - land both in
-the same instant and nothing is re-triggered.
+**The light meter no longer does that after every light change.** It used to,
+on the grounds that the first seconds after a change come out soft. That is
+true, and it is also how the focus ended up somewhere the preset never asked
+for: every trim sent the autofocus hunting, and a night scene with nothing
+well-lit to lock on to is precisely the scene it hunts worst in. Hunting is
+worse than a slightly stale focus.
+
+So the picture gets measured first. The measure is the variance of its
+Laplacian - the standard "is it in focus" number - taken on a half size grey
+copy, and its useful property is that it does not care how bright the frame is,
+which matters here where the frame is dark half the time by design. A sharp
+daylight frame from this camera runs in the hundreds; one that has lost focus
+runs in the low tens.
+
+| what the picture measures | what happens |
+|---|---|
+| below the threshold - actually blurry | refocus, which is the case the refocus was put in for |
+| at or above it | leave the focus alone, and put it back to the preset's own distance if it has drifted more than 12% of the control's range |
+
+The threshold eases from 55 in daylight to 22 at the top of the gain range,
+because a correctly focused night frame is genuinely less detailed than a
+correctly focused day one - judge night by the day number and the autofocus
+hunts all night, which is the exact behaviour that puts a soft first few
+seconds into every recording.
 
 The preset tables used to carry a fixed focus distance, applied with autofocus
-off. That column is gone and `focus_absolute` is no longer set.
+off. That column is still gone: the correction never picks a focus distance of
+its own, it only reads `focus_absolute` as the preset left it and writes that
+same value back when it has drifted. The reading appears on the status line:
+
+```
+light meter: trim +2, mean 91 of target 100, white 0.0%, black 14% - picture is where it should be | sharpness score 212
+```
 
 ### Control ranges
 
@@ -753,6 +810,91 @@ python3 webcam_detect.py some-snapshot.jpg --save
 ```
 
 
+## Locking on to one car, 24 hours a day
+
+Everything above this meters the whole frame: the light meter averages it, the
+CLAHE spreads it, the detector lifts whatever it finds. That is the right
+default, and it is also why the car across the road comes out badly. It is two
+per cent of the frame, so the security light at the far end of the yard wins
+every argument about exposure.
+
+Lock on to that car and the arguments are settled in its favour instead:
+
+* the **light meter** aims its target grey level at the car and its bit of kerb
+  instead of at the whole frame, so the floodlight at the other end gets a vote
+  proportional to how much of the car it lights rather than to how bright it is
+* the **correction** gives that box an extra lift on top of the ordinary
+  detector boost, and writes its close crop first
+* and it keeps doing both, day and night, until it is unlocked
+
+### Picking the target
+
+The panel sits under the before-and-after frames at the bottom of the window:
+the **twenty newest detection crops**, five across and four down, newest first.
+Those are the detector's own crops - the folder of cars rather than the folder
+of the yard with a car in the corner of it.
+
+Two ways to pick, because a mouse and a keyboard suit different moments: click
+the picture itself, or press the **Lock** button under it. The locked one gets a
+border and reads **LOCKED**, and a picture of the current target sits at the top
+of the panel beside a line saying when it was last found, so what is locked is
+never in doubt - a label saying "car" is true of every car on the street.
+**Unlock** goes back to metering the whole frame.
+
+The boxes only fill up once the detector has found something, so an empty panel
+on a first run is an ordinary quiet night rather than a failure, and the panel
+says so.
+
+### Finding it again
+
+A parked car is not in the same pixels tomorrow as today - the lens refocuses,
+the camera gets nudged, the car is moved and brought back. So the target is
+searched for in each frame, in this order:
+
+1. **template match** of the stored crop, tried at five scales over the whole
+   frame; a match has to score at least 0.42 to be believed
+2. failing that, the **detector box of the same label** nearest to where the
+   target was last seen
+3. failing that, the **last known place** - which is the honest answer for a
+   parked car on a night too dark to match anything in, and a better one than
+   going back to the whole frame
+
+Below the match threshold the answer is "I cannot see the target in this
+frame", which at night is often the true one and is better than pointing the
+exposure at a patch of fence that happened to score 0.3. The status line says
+which of the three answered:
+
+```
+light meter: trim +1, mean 96 of target 100, white 0.1%, black 22% - picture is where it should be | metering the locked car (template match)
+```
+
+### Where the lock lives
+
+In `~/.webcam-object-lock.json`, with the chosen crop copied to
+`~/.webcam-object-lock.jpg` beside it. The copy matters: without it the lock
+would last only until the detections folder next pruned itself down to its
+forty newest files, which on a busy evening is under an hour - the lock would
+quietly unlock itself overnight and the reason would be invisible.
+
+The matching lives in `webcam_lock.py`, which both repositories share, so the
+Python window and the Perl window write the same lock file by the same code:
+**lock on in either one and the other follows.** It also has a command line, which
+is how the Perl side calls it:
+
+```bash
+python3 webcam_lock.py                  # what is locked, and the newest crops
+python3 webcam_lock.py list             # the crops, one per line
+python3 webcam_lock.py set <crop.jpg>   # lock on to that crop
+python3 webcam_lock.py roi <still.jpg>  # find the target in that still
+python3 webcam_lock.py box <still.jpg>  # the same, as a pixel box
+python3 webcam_lock.py clear            # unlock
+```
+
+Nothing here is required. With no lock set, every part of it answers "nothing
+locked" and the whole program meters the frame exactly as it did before; with
+no OpenCV installed, the lock degrades to its stored box rather than failing.
+
+
 ## Is it working: the status tile, and the four-frame comparison
 
 The correction is a stack of things that each fail quietly: OpenCV does the
@@ -967,10 +1109,11 @@ most webcams, this one included if it has no `led1_mode` line.
 
 The correction is not only applied to the saved copies. The light meter
 measures the picture every 10 seconds and **changes the camera's own settings
-in real time** when the picture needs it - gain, brightness, contrast,
-saturation and backlight compensation, each a step at a time away from
-whatever the preset set, with sharpness following the gain and the autofocus
-restarted after the light moves.
+in real time** when the picture needs it - gain, brightness, contrast and
+backlight compensation, each a step at a time away from whatever the preset
+set, with sharpness following the gain. Saturation, hue and gamma are left
+exactly as the preset set them, and the autofocus is restarted only when the
+picture is measurably blurry.
 
 Two samples have to agree before anything moves, and there is a dead band
 around the target, so it corrects rather than hunts. A scene that holds more
@@ -1231,6 +1374,10 @@ camera it is genuinely useful, which is why it is still there.
 | `~/.webcam-enhance.conf` | the two correction switches, shared with the scheduler |
 | `webcam_detect.py` | finding cars and people, and aiming the correction at them |
 | `detector/` | the NanoDet object detector (Apache 2.0) and its licence |
+| `webcam_lock.py` | the locked-on target: picking it, and finding it again in each frame |
+| `~/.webcam-object-lock.json` | which object is locked, and where it was last seen |
+| `~/.webcam-object-lock.jpg` | the chosen crop, copied aside so pruning cannot take the lock with it |
+| `~/Pictures/webcam/.../enhanced/detections/` | the close crops the lock panel offers to choose from |
 | `webcam_install.py` | installs every dependency at startup, verbosely, conda-aware |
 | `webcam_status.py` | the status rows, and the four comparison thumbnails |
 | `webcam_errors.py` | the one log every OpenCV, TensorFlow, brain and correction failure goes to |
