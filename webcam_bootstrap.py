@@ -89,6 +89,14 @@ def ensure(*modules):
     if os.environ.get('WEBCAM_NO_BOOTSTRAP'):
         return
 
+    # A name in the program table is a program, not an importable module.
+    # webcam_record and webcam_archive both call ensure('ffmpeg'), meaning
+    # the encoder - and taking that as a module name is how this used to
+    # refuse to start on a machine that had ffmpeg itself but no PyPI
+    # package of the same name. There is no such Python module worth having:
+    # the one on PyPI called ffmpeg is an unrelated wrapper.
+    modules = [m for m in modules if m not in APT_FOR_PROGRAM]
+
     missing = [m for m in modules if _missing(m)]
 
     missing_programs = sorted(
