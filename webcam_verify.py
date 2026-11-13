@@ -386,16 +386,32 @@ def would_correct():
             'both correction switches are off - nothing is corrected')
 
 
-def _hour_counts(folder, enhanced_name='enhanced'):
-    """Stills per hour of the day, and corrected copies per hour.
+# The day in quarter hours. An hour is too coarse to see the thing that
+# actually goes wrong: the light changes fastest either side of sunrise and
+# sunset, the presets fire on fourteen- and thirty-minute offsets from them,
+# and a whole hour averages all of that into one number. At 15 minutes a gap
+# that opens when a preset fires is visible as a gap, in the slot it happened
+# in.
+SLOT_MINUTES = 15
+SLOTS = (24 * 60) // SLOT_MINUTES
 
-    Counted by hour of day rather than by file, because the corrected copy is
+
+def slot_name(slot):
+    """The clock time a slot starts at, as HH:MM."""
+    minutes = slot * SLOT_MINUTES
+    return f'{minutes // 60:02d}:{minutes % 60:02d}'
+
+
+def _slot_counts(folder, enhanced_name='enhanced'):
+    """Stills per quarter hour of the day, and corrected copies per quarter.
+
+    Counted by time of day rather than by file, because the corrected copy is
     named for when it was written and not for its source, so there is no
-    one-to-one pairing to be had. An hour with stills and no corrected copies
-    is the gap worth seeing, and that this does show.
+    one-to-one pairing to be had. A quarter hour with stills and no corrected
+    copies is the gap worth seeing, and that this does show.
     """
-    stills = [0] * 24
-    done = [0] * 24
+    stills = [0] * SLOTS
+    done = [0] * SLOTS
     if not folder or not os.path.isdir(folder):
         return stills, done
     for root, _dirs, files in os.walk(folder):
@@ -406,11 +422,12 @@ def _hour_counts(folder, enhanced_name='enhanced'):
             if not name.lower().endswith(('.jpg', '.jpeg')):
                 continue
             try:
-                hour = time.localtime(
-                    os.path.getmtime(os.path.join(root, name))).tm_hour
+                when = time.localtime(os.path.getmtime(
+                    os.path.join(root, name)))
             except OSError:
                 continue
-            (done if corrected else stills)[hour] += 1
+            slot = (when.tm_hour * 60 + when.tm_min) // SLOT_MINUTES
+            (done if corrected else stills)[slot] += 1
     return stills, done
 
 
@@ -432,9 +449,9 @@ def coverage(folder=None):
     if folder is None:
         path, _when = newest_snapshot()
         folder = os.path.dirname(path) if path else ''
-    stills, done = _hour_counts(folder)
+    stills, done = _slot_counts(folder)
 
-    gaps = [hour for hour in range(24) if stills[hour] and not done[hour]]
+    gaps = [slot for slot in range(SLOTS) if stills[slot] and not done[slot]]
     return {'covered': covered, 'why': why, 'harvested': harvested,
             'stills': stills, 'done': done, 'gaps': gaps, 'folder': folder}
 
@@ -453,19 +470,38 @@ def print_coverage():
         print('  (a mode that has not come round yet is not a fault - '
               'bright sun and golden PM only happen in their own hour)')
 
-    print(f"\n  stills by hour, in {report['folder'] or '(no folder found)'}")
-    rows = [(h, report['stills'][h], report['done'][h]) for h in range(24)
-            if report['stills'][h] or report['done'][h]]
+    print(f"\n  stills by quarter hour, in "
+          f"{report['folder'] or '(no folder found)'}")
+    rows = [(s, report['stills'][s], report['done'][s]) for s in range(SLOTS)
+            if report['stills'][s] or report['done'][s]]
     if not rows:
         print('    nothing on disk yet')
-    for hour, raw, fixed in rows:
+    for slot, raw, fixed in rows:
         flag = '  <- stills but nothing corrected' if raw and not fixed else ''
-        print(f'    {hour:02d}:00  {raw:5d} stills  {fixed:5d} corrected{flag}')
+        print(f'    {slot_name(slot)}  {raw:5d} stills  '
+              f'{fixed:5d} corrected{flag}')
     if report['gaps']:
-        print(f"\n  hours with stills and no corrected copy: "
-              f"{', '.join(f'{h:02d}:00' for h in report['gaps'])}")
+        # Runs of empty quarters read as a span rather than a list of times:
+        # "19:00-19:45" is a preset that went wrong, where four separate
+        # times are four things to cross-reference.
+        spans, start, last = [], None, None
+        for slot in report['gaps']:
+            if start is None:
+                start = last = slot
+            elif slot == last + 1:
+                last = slot
+            else:
+                spans.append((start, last))
+                start = last = slot
+        if start is not None:
+            spans.append((start, last))
+        shown = ', '.join(slot_name(a) if a == b
+                          else f'{slot_name(a)}-{slot_name(b)}'
+                          for a, b in spans)
+        print(f'\n  quarter hours with stills and no corrected copy: {shown}')
     else:
-        print('\n  every hour that has stills has corrected copies too')
+        print('\n  every quarter hour that has stills has corrected '
+              'copies too')
     return 0 if not report['gaps'] else 1
 
 

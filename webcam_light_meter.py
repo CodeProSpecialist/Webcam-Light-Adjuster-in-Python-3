@@ -81,7 +81,16 @@ HARVEST_EVERY = 120
 # writes, and a loop that acts faster than its own feedback arrives will
 # oscillate - the picture breathes in and out all night instead of settling.
 # Ten seconds of patience is what buys the settling.
-METER_EVERY = 30
+# How often the picture is looked at: every 10 seconds. The light at dusk
+# moves faster than a half-minute check can follow, and the correction is
+# cheap - a mean and two clipping figures off a quarter-size copy of a still
+# the recorder already wrote. Nothing is captured for this and the camera is
+# not touched, so the cost of looking more often is a few milliseconds.
+#
+# The trim itself is still rate-limited by METER_SETTLE and the dead band
+# below, so looking every 10 seconds does not mean moving the controls every
+# 10 seconds - it means noticing sooner when they need to move.
+METER_EVERY = 10
 METER_SETTLE = 1
 
 # What a good picture looks like, as numbers.

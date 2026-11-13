@@ -1070,21 +1070,45 @@ python3 webcam_verify.py --coverage
   night         yes         1562
   night_mono    yes         0
 
-  stills by hour, in /home/.../program-snapshots-for-auto-adjust-picture
-    00:00    180 stills    180 corrected
-    01:00    180 stills    180 corrected
+  stills by quarter hour, in /home/.../program-snapshots-for-auto-adjust
+    18:30     45 stills     45 corrected
+    18:45     45 stills     45 corrected
+    19:00     45 stills      0 corrected  <- stills but nothing corrected
+    19:15     45 stills      0 corrected  <- stills but nothing corrected
+    19:30     45 stills     45 corrected
     ...
-  every hour that has stills has corrected copies too
+  quarter hours with stills and no corrected copy: 19:00-19:15
 ```
 
 It answers two different questions, which is the point of it. **Would** a
 frame arriving now in each mode be corrected - that is the switches. And
-**has** each hour of the day actually got corrected copies on disk - that is
-the files. A mode can be switched on and still have nothing on disk simply
-because its hour has not come round; bright sun and golden PM only happen in
-their own hour, and the report says so rather than calling it a fault. It
-exits non-zero when an hour has stills and nothing corrected, so it can be
-run from cron.
+**has** each quarter hour of the day actually got corrected copies on disk -
+that is the files. A mode can be switched on and still have nothing on disk
+simply because its turn has not come round; bright sun and golden PM only
+happen in their own part of the day, and the report says so rather than
+calling it a fault. It exits non-zero when a quarter hour has stills and
+nothing corrected, so it can be run from cron.
+
+**Quarter hours rather than hours**, because an hour is too coarse to see what
+actually goes wrong. The light moves fastest either side of sunrise and
+sunset, the presets fire on fourteen- and thirty-minute offsets from them, and
+an hour averages all of that into a single number - a gap that opens when a
+preset fires disappears into it. At 15 minutes the gap is visible in the slot
+it happened in, and a run of empty slots is printed as a span rather than a
+list of times, so `19:00-19:15` reads as one event instead of two things to
+cross-reference.
+
+### How often the picture is checked
+
+**Every 10 seconds.** The light at dusk moves faster than a half-minute check
+can follow, and looking is cheap: a mean and two clipping figures off a
+quarter-size copy of a still the recorder already wrote. Nothing is captured
+for it and the camera is never touched, so looking more often costs a few
+milliseconds.
+
+Looking often is not the same as moving often. The trim is still held back by
+its settle time and its dead band, so checking every 10 seconds means noticing
+sooner when the controls need to move, not moving them every 10 seconds.
 
 ### Optionally, the stream as well
 
