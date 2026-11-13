@@ -827,6 +827,12 @@ Lock on to that car and the arguments are settled in its favour instead:
   detector boost, and writes its close crop first
 * and it keeps doing both, day and night, until it is unlocked
 
+![The lock panel: the current target, and the twenty newest detection crops](docs/lock-panel.png)
+
+*(The window is real - that is the panel's own code rendering - but the crops
+in it are stand-in pictures generated for the screenshot, not detections from
+anyone's camera.)*
+
 ### Picking the target
 
 The panel sits under the before-and-after frames at the bottom of the window:
