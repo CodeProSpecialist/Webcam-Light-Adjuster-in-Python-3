@@ -107,10 +107,17 @@ def to_photo(frame, max_w=VIEW_W, max_h=VIEW_H):
     height, width = frame.shape[:2]
     if width <= 0 or height <= 0:
         return None
-    scale = min(max_w / float(width), max_h / float(height), 1.0)
-    if scale < 1.0:
-        frame = cv2.resize(frame, (int(width * scale), int(height * scale)),
-                           interpolation=cv2.INTER_AREA)
+    # Fit the pane in both directions. The preview the recorder publishes is
+    # 640 wide whatever the camera records at, so without scaling up it sits
+    # in the middle of a 960-wide pane with black all round it - which is
+    # what the pane looked like before. Upscaling is capped: past about 3x a
+    # 640-wide frame only gets softer, and the resize is not free at 10 Hz.
+    scale = min(max_w / float(width), max_h / float(height))
+    scale = min(scale, 3.0)
+    if scale < 0.99 or scale > 1.01:
+        frame = cv2.resize(
+            frame, (max(1, int(width * scale)), max(1, int(height * scale))),
+            interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR)
     ok, buffer = cv2.imencode('.png', frame,
                               [cv2.IMWRITE_PNG_COMPRESSION, 1])
     if not ok:
@@ -161,7 +168,8 @@ class LivePage(tk.Frame):
         cameras = settings['cameras']
 
         self.grid_area = tk.Frame(self)
-        self.grid_area.pack(side='top', padx=6, pady=6)
+        self.grid_area.pack(side='top', fill='both', expand=True,
+                            padx=6, pady=6)
 
         bar = tk.Frame(self)
         bar.pack(side='top', fill='x', padx=6)
@@ -182,6 +190,11 @@ class LivePage(tk.Frame):
                   command=self.on_janitor).pack(side='left', padx=12)
         tk.Button(buttons, text='Open archive folder', width=18,
                   command=self.on_open_folder).pack(side='left', padx=2)
+        # Detach the video into a window of its own - the phone-style
+        # pop-out. Camera 1 by default; each pane has its own small pop-out
+        # button in its title bar for the multi-camera case.
+        tk.Button(buttons, text='Pop out video', width=14,
+                  command=lambda: self.pop_out(1)).pack(side='left', padx=12)
 
         # ---- the cameras ----
         #
@@ -325,13 +338,27 @@ class LivePage(tk.Frame):
         which is the only time the geometry needs to move."""
         for child in self.grid_area.winfo_children():
             child.destroy()
+        for pane in self.panes:
+            if pane.get('pop'):
+                try:
+                    pane['pop']['window'].destroy()
+                except tk.TclError:
+                    pass
         self.panes = []
         count = max(1, min(webcam_record.MAX_CAMERAS, int(count)))
-        across, _down, width, height = self.LAYOUTS[count]
+        across, down, width, height = self.LAYOUTS[count]
+        # Every row and column pulls its share of whatever space the window
+        # has, so the panes grow with the window instead of sitting at their
+        # starting size in a field of grey.
+        for row in range(down):
+            self.grid_area.rowconfigure(row, weight=1)
+        for column in range(across):
+            self.grid_area.columnconfigure(column, weight=1)
         for number in range(1, count + 1):
             holder = tk.Frame(self.grid_area, bd=1, relief='sunken')
             holder.grid(row=(number - 1) // across,
-                        column=(number - 1) % across, padx=3, pady=3)
+                        column=(number - 1) % across, padx=3, pady=3,
+                        sticky='nsew')
             head = tk.Frame(holder)
             head.pack(side='top', fill='x')
             dot = tk.Label(head, text=' ', bg='#555555', width=2)
@@ -339,9 +366,13 @@ class LivePage(tk.Frame):
             title = tk.Label(head, text=f'Camera {number}',
                              font=('Helvetica', 9, 'bold'))
             title.pack(side='left', padx=4)
+            tk.Button(head, text='Pop out', font=('Helvetica', 8),
+                      padx=4, pady=0,
+                      command=lambda n=number: self.pop_out(n)
+                      ).pack(side='right', padx=4)
             canvas = tk.Canvas(holder, bg='#101014', width=width,
                                height=height, highlightthickness=0)
-            canvas.pack(side='top')
+            canvas.pack(side='top', fill='both', expand=True)
             item = canvas.create_image(width // 2, height // 2,
                                        anchor='center')
             text = canvas.create_text(width // 2, height // 2, fill='#99aabb',
@@ -361,12 +392,138 @@ class LivePage(tk.Frame):
                                           fill='#ffffff',
                                           font=('Helvetica', 11, 'bold'),
                                           state='hidden')
-            self.panes.append({
+            pane = {
                 'canvas': canvas, 'item': item, 'text': text, 'dot': dot,
                 'title': title, 'photo': None, 'mtime': 0.0,
                 'width': width, 'height': height, 'index': number,
-                'rec_dot': rec_dot, 'rec_text': rec_text,
-            })
+                'rec_dot': rec_dot, 'rec_text': rec_text, 'pop': None,
+            }
+            canvas.bind('<Configure>',
+                        lambda event, target=pane: self.on_pane_resize(
+                            target, event.width, event.height))
+            self.panes.append(pane)
+
+    @staticmethod
+    def on_pane_resize(target, width, height):
+        """Keep a pane's idea of its own size, and its drawing, centred.
+
+        The canvas is told to fill its holder, so its real size is whatever
+        the window gives it - not the number it was created with. The next
+        frame is scaled to this, which is what makes maximising the window
+        actually enlarge the picture.
+        """
+        if width < 20 or height < 20:
+            return
+        target['width'] = width
+        target['height'] = height
+        target['mtime'] = 0.0          # force a redraw at the new size
+        canvas = target['canvas']
+        try:
+            canvas.coords(target['item'], width // 2, height // 2)
+            canvas.coords(target['text'], width // 2, height // 2)
+            canvas.itemconfigure(target['text'], width=max(80, width - 40))
+        except tk.TclError:
+            pass
+
+    # -- the pop-out window --
+
+    def pop_out(self, index):
+        """Detach one camera into a window of its own.
+
+        The phone-style pop-out: the video leaves the page and becomes a
+        small always-on-top window that can be dragged anywhere, resized, or
+        left over another program while the main window is doing something
+        else. The pane it came from says where the video went and offers it
+        back. Closing the pop-out docks it again - there is no way to end up
+        with the video nowhere.
+        """
+        pane = next((p for p in self.panes if p['index'] == index), None)
+        if pane is None:
+            return
+        if pane.get('pop'):
+            try:
+                pane['pop']['window'].deiconify()
+                pane['pop']['window'].lift()
+                pane['pop']['window'].focus_force()
+            except tk.TclError:
+                pane['pop'] = None
+            else:
+                return
+
+        window = tk.Toplevel(self.winfo_toplevel())
+        window.title(f'Camera {index} - live video')
+        window.configure(bg='#101014')
+        window.geometry('640x400')
+        window.minsize(240, 180)
+        try:
+            window.attributes('-topmost', True)
+        except tk.TclError:
+            pass
+
+        canvas = tk.Canvas(window, bg='#101014', highlightthickness=0)
+        canvas.pack(side='top', fill='both', expand=True)
+        item = canvas.create_image(320, 180, anchor='center')
+        text = canvas.create_text(320, 180, fill='#99aabb', width=560,
+                                  justify='center', font=('Helvetica', 10),
+                                  text='waiting for the first frame...')
+        rec_dot = canvas.create_oval(12, 12, 26, 26, fill='#dd1111',
+                                     outline='#ffffff', width=1,
+                                     state='hidden')
+        rec_text = canvas.create_text(34, 19, anchor='w', text='REC',
+                                      fill='#ffffff',
+                                      font=('Helvetica', 11, 'bold'),
+                                      state='hidden')
+
+        bar = tk.Frame(window)
+        bar.pack(side='bottom', fill='x')
+        on_top = tk.BooleanVar(value=True)
+
+        def toggle_top():
+            try:
+                window.attributes('-topmost', bool(on_top.get()))
+            except tk.TclError:
+                pass
+
+        tk.Checkbutton(bar, text='Always on top', variable=on_top,
+                       command=toggle_top).pack(side='left', padx=6)
+        tk.Button(bar, text='Pop in', width=10,
+                  command=lambda: self.pop_in(index)).pack(side='right',
+                                                           padx=6, pady=2)
+
+        pop = {'window': window, 'canvas': canvas, 'item': item,
+               'text': text, 'rec_dot': rec_dot, 'rec_text': rec_text,
+               'photo': None, 'width': 640, 'height': 360}
+        canvas.bind('<Configure>',
+                    lambda event, target=pop: self.on_pane_resize(
+                        target, event.width, event.height))
+        canvas.bind('<Double-Button-1>', lambda _e: self.pop_in(index))
+        window.protocol('WM_DELETE_WINDOW', lambda: self.pop_in(index))
+        pane['pop'] = pop
+        pane['mtime'] = 0.0
+        pane['canvas'].itemconfigure(pane['item'], image='')
+        pane['photo'] = None
+        pane['canvas'].itemconfigure(
+            pane['text'],
+            text=f'Camera {index} is playing in its own window.\n'
+                 f'Close that window, or press Pop in, to bring it back here.')
+
+    def pop_in(self, index):
+        """Dock a popped-out camera back into its pane."""
+        pane = next((p for p in self.panes if p['index'] == index), None)
+        if pane is None or not pane.get('pop'):
+            return
+        try:
+            pane['pop']['window'].destroy()
+        except tk.TclError:
+            pass
+        pane['pop'] = None
+        pane['photo'] = None
+        pane['mtime'] = 0.0            # the next frame redraws the pane
+        try:
+            pane['canvas'].itemconfigure(pane['text'],
+                                         text='waiting for the next frame...')
+        except tk.TclError:
+            pass
 
     # -- settings --
 
@@ -537,21 +694,24 @@ class LivePage(tk.Frame):
         atomically where ffmpeg supports it.
         """
         for pane in self.panes:
+            # A popped-out camera is drawn in its own window instead of its
+            # pane - one decode either way, never both.
+            target = pane['pop'] or pane
             try:
                 path = webcam_record.preview_file(pane['index'])
                 mtime = os.path.getmtime(path)
                 if mtime <= pane['mtime']:
                     continue
                 frame = cv2.imread(path, cv2.IMREAD_COLOR)
-                photo = to_photo(frame, pane['width'], pane['height'])
+                photo = to_photo(frame, target['width'], target['height'])
                 if photo is None:
                     continue
                 pane['mtime'] = mtime
-                pane['photo'] = photo       # Tk drops an unreferenced one
-                pane['canvas'].itemconfigure(pane['item'], image=photo)
-                pane['canvas'].itemconfigure(pane['text'], text='')
+                target['photo'] = photo     # Tk drops an unreferenced one
+                target['canvas'].itemconfigure(target['item'], image=photo)
+                target['canvas'].itemconfigure(target['text'], text='')
                 self.frames_drawn += 1
-            except (OSError, cv2.error):
+            except (OSError, cv2.error, tk.TclError):
                 continue
         now = time.time()
         if now - self.last_count_at >= 2:
@@ -570,8 +730,16 @@ class LivePage(tk.Frame):
             stale = time.time() - pane['mtime'] > 5 if pane['mtime'] else True
             # Recording AND a picture arriving: either alone is not recording.
             marked = 'normal' if (row.get('recording') and not stale) else 'hidden'
-            pane['canvas'].itemconfigure(pane['rec_dot'], state=marked)
-            pane['canvas'].itemconfigure(pane['rec_text'], state=marked)
+            for target in (pane, pane['pop']):
+                if not target:
+                    continue
+                try:
+                    target['canvas'].itemconfigure(target['rec_dot'],
+                                                   state=marked)
+                    target['canvas'].itemconfigure(target['rec_text'],
+                                                   state=marked)
+                except tk.TclError:
+                    pass
             if row.get('recording') and not stale:
                 pane['dot'].config(bg='#cc2222')
             elif row.get('running') and not stale:
@@ -583,13 +751,14 @@ class LivePage(tk.Frame):
                      + (f'  {device}' if device else '')
                      + (f"  {row['camera_gb']:.1f} GB"
                         if row.get('camera_gb') else ''))
+            shown = pane['pop'] or pane
             if stale and row.get('error'):
-                pane['canvas'].itemconfigure(pane['item'], image='')
-                pane['canvas'].itemconfigure(pane['text'],
-                                             text=row['error'][:300])
+                shown['canvas'].itemconfigure(shown['item'], image='')
+                shown['canvas'].itemconfigure(shown['text'],
+                                              text=row['error'][:300])
             elif stale and row.get('retry_in'):
-                pane['canvas'].itemconfigure(
-                    pane['text'],
+                shown['canvas'].itemconfigure(
+                    shown['text'],
                     text=f"camera lost - retrying in {row['retry_in']}s")
 
         if status['recording']:
