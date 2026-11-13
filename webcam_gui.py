@@ -178,10 +178,6 @@ class LivePage(tk.Frame):
         buttons.pack(side='top', fill='x', padx=6, pady=4)
         tk.Button(buttons, text='Start Recording', width=16, bg='#cc3333',
                   fg='white', command=self.on_record).pack(side='left', padx=2)
-        tk.Button(buttons, text='Preview only', width=14,
-                  command=self.on_preview).pack(side='left', padx=2)
-        tk.Button(buttons, text='Stop', width=10,
-                  command=self.on_stop).pack(side='left', padx=2)
         tk.Button(buttons, text='Free space now', width=15,
                   command=self.on_janitor).pack(side='left', padx=12)
         tk.Button(buttons, text='Open archive folder', width=18,
@@ -416,15 +412,6 @@ class LivePage(tk.Frame):
     def on_record(self):
         self.on_apply()
         self.app.recorder.start(record=True)
-
-    def on_preview(self):
-        self.on_apply()
-        self.app.recorder.start(record=False)
-
-    def on_stop(self):
-        self.app.recorder.stop()
-        self.state_text.config(text='stopped')
-        self.state_dot.config(bg='#555555')
 
     def on_janitor(self):
         def work():
@@ -1212,9 +1199,6 @@ class App:
         The loop cap is what makes that safe to do unattended: recording from
         the moment it opens can only ever use the archive's own cap, and the
         oldest footage is recycled rather than the disk filling up.
-
-        Preview only is still one press away for when the camera is being
-        aimed or the picture tuned and none of it is worth keeping.
         """
         if not self.recorder.is_running():
             self.recorder.start(record=True)

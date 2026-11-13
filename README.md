@@ -109,8 +109,9 @@ That is deliberate. A security recorder that waits to be told to record has
 already missed whatever happened while it waited. The loop cap is what makes
 it safe to do unattended: recording from the moment it opens can only ever use
 the archive's own cap, and the oldest footage is recycled rather than the disk
-filling up. **Preview only** is one press away for when a camera is being
-aimed and none of it is worth keeping.
+filling up. There is no preview-only or stop button on this page: a security
+recorder that can be switched off from its own front page is one that gets
+switched off and left that way.
 
 Each pane carries a red dot and **REC** in its top left corner while that
 camera is recording - the convention every camera has used for forty years,
@@ -555,8 +556,8 @@ or re-enumerated by the kernel. The recorder restarts it with a backoff; a
 recorder that stays down until somebody notices is not a recorder.
 
 **The last segment will not play.** It was being written when the program was
-killed outright, so it has no moov atom. Stop with the window's Stop button,
-Ctrl-C, or `systemctl --user stop`, all of which ask ffmpeg politely.
+killed outright, so it has no moov atom. Close the window, or stop it with
+Ctrl-C or `systemctl --user stop`, all of which ask ffmpeg politely.
 
 **Fast forward runs at normal speed.** The ffmpeg in use is too old to read
 faster than real time. Ubuntu 24.04 and 26.04 both ship a new enough one.
