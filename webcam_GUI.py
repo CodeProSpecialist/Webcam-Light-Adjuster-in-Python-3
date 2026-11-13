@@ -524,8 +524,21 @@ class TerminalPane:
 
 
 class Window:
-    def __init__(self, root):
+    """The settings page: every camera control, the presets, the light meter,
+    the brain and the lock panel.
+
+    It takes a container now as well as a root. Given one - which is what
+    webcam_main.py passes, the frame behind its Settings tab - the whole page
+    is built inside that frame instead of filling a window of its own, and the
+    title and the close handler are left alone because the window around it
+    owns both. Given nothing, it behaves exactly as it always did and this
+    file still runs on its own.
+    """
+
+    def __init__(self, root, container=None):
         self.root = root
+        self.embedded = container is not None
+        self.host = container if container is not None else root
         self.camera = Camera(DEVICE)
         self.meter = LightMeter(device=DEVICE) if LightMeter else None
         self.meter_on = tk.BooleanVar(value=True)
@@ -554,12 +567,14 @@ class Window:
         self.train_cam = tk.BooleanVar(value=bool(saved.get(
             getattr(webcam_enhance, 'KEY_TRAIN_CAMERA', ''), False)))
 
-        root.title('Webcam Settings')
-        tk.Label(root, text='Webcam Controls', font=('Helvetica', 13, 'bold')).pack(pady=4)
+        if not self.embedded:
+            root.title('Webcam Settings')
+        tk.Label(self.host, text='Webcam Controls',
+                 font=('Helvetica', 13, 'bold')).pack(pady=4)
 
         count = len(self.camera.controls)
         tk.Label(
-            root,
+            self.host,
             text=(f'{count} controls read from {DEVICE}' if count
                   else f'No controls readable from {DEVICE} - is the camera plugged in?'),
             font=('Helvetica', 9), fg='#003366',
@@ -579,7 +594,8 @@ class Window:
         self.build_status_tile()
         self.build_lock_panel()
         self.size_to_fit()
-        root.protocol('WM_DELETE_WINDOW', self.on_close)
+        if not self.embedded:
+            root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.meter:
             root.after(6000, self.meter_tick)
 
@@ -597,13 +613,14 @@ class Window:
     # canvas as a canvas window and the canvas scrolls that.
 
     def build_scroll_area(self):
-        area = tk.Frame(self.root)
+        area = tk.Frame(self.host)
         self.canvas = tk.Canvas(area, highlightthickness=0)
         # Wide enough to get hold of with the mouse - this is the slider for
         # the whole window, not an afterthought.
         vbar = tk.Scrollbar(area, orient='vertical', command=self.canvas.yview,
                             width=18)
-        hbar = tk.Scrollbar(self.root, orient='horizontal', command=self.canvas.xview)
+        hbar = tk.Scrollbar(self.host, orient='horizontal',
+                            command=self.canvas.xview)
         self.canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
         hbar.pack(side='bottom', fill='x')
         self.canvas.pack(side='left', fill='both', expand=True)
@@ -661,7 +678,8 @@ class Window:
         want_w = min(self.page.winfo_reqwidth(),
                      int(self.root.winfo_screenwidth() * 0.98))
         want_h = min(self.page.winfo_reqheight(),
-                     int(self.root.winfo_screenheight() * 0.86))
+                     int(self.root.winfo_screenheight()
+                         * (0.78 if self.embedded else 0.86)))
         self.canvas.configure(width=want_w, height=max(want_h, 300),
                               scrollregion=self.canvas.bbox('all'))
 
@@ -1929,10 +1947,10 @@ class Window:
         """Does the camera take what this window sends, and is the picture it
         is producing usable?
 
-        Worth asking separately, because the recorder - Xeoma, here - holds
-        the camera nearly all the time. Controls are per device rather than
-        per handle, so writes from outside the recorder do reach the stream it
-        is taping; what is not guaranteed is that they stay, and v4l2-ctl
+        Worth asking separately, because the recorder holds the camera nearly
+        all the time. Controls are per device rather than per handle, so
+        writes from outside the recording process do reach the stream it is
+        taping; what is not guaranteed is that they stay, and v4l2-ctl
         reports success for a write the camera then ignores. So this reads
         every control back and measures the newest still, and reports what the
         camera says rather than what it was told.
