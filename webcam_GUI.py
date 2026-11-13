@@ -90,6 +90,13 @@ try:
 except ImportError:                                               # noqa: BLE001
     train_webcam_brain = None
 
+# Off and on for the light on the front of the camera, for the cameras that
+# let software near it.
+try:
+    import webcam_led
+except ImportError:                                               # noqa: BLE001
+    webcam_led = None
+
 # Every OpenCV, TensorFlow, detector and correction failure is written here by
 # whichever part of the pipeline hit it - including by the scheduler and by
 # cron runs that have no terminal of their own - and this window tails it into
@@ -690,6 +697,71 @@ class Window:
                 command=lambda n=name: self.on_preset(n),
             ).grid(row=index // 3, column=index % 3, padx=3, pady=3)
         self.preset_status.pack(fill='x', padx=6)
+        self.build_led_row()
+
+    # ---- the LED on the front of the camera ----
+
+    def build_led_row(self):
+        """Off and on for the camera's own light, when the camera has one
+        that software can reach.
+
+        Most webcams do not. The privacy LED is often wired to the sensor's
+        power rail, and on those nothing here can touch it - which is why
+        this reports what the camera did rather than what it was told, and
+        says plainly when the answer is no. A button that silently does
+        nothing is worse than one that says it cannot.
+        """
+        row = tk.Frame(self.right)
+        row.pack(fill='x', padx=6, pady=(4, 0))
+        tk.Label(row, text='Camera LED:', font=('Helvetica', 9)).pack(
+            side='left')
+        self.led_off_button = tk.Button(
+            row, text='Turn the LED off', font=('Helvetica', 8),
+            command=lambda: self.on_led('off'))
+        self.led_off_button.pack(side='left', padx=3)
+        self.led_on_button = tk.Button(
+            row, text='LED on', font=('Helvetica', 8),
+            command=lambda: self.on_led('on'))
+        self.led_on_button.pack(side='left', padx=3)
+        self.led_status = tk.Label(
+            self.right, text='', anchor='w', justify='left',
+            font=('Helvetica', 8), wraplength=310, fg='#333333')
+        self.led_status.pack(fill='x', padx=6)
+        self.refresh_led_status()
+
+    def refresh_led_status(self):
+        """What the LED is doing now, without changing it."""
+        if webcam_led is None:
+            self.led_status.configure(
+                text='webcam_led.py is not next to this file', fg='#aa0000')
+            for button in (self.led_off_button, self.led_on_button):
+                button.configure(state='disabled')
+            return
+        try:
+            worked, text = webcam_led.status(DEVICE)
+        except Exception as problem:                           # noqa: BLE001
+            worked, text = False, f'could not ask the camera: {problem}'
+        self.led_status.configure(text=text,
+                                  fg='#333333' if worked else '#884400')
+        # A camera with no LED control keeps the buttons, greyed, rather than
+        # losing them - so the row still answers the question "can I?" next
+        # time rather than looking like a feature that was never there.
+        state = 'normal' if worked else 'disabled'
+        for button in (self.led_off_button, self.led_on_button):
+            button.configure(state=state)
+
+    def on_led(self, mode):
+        self.led_status.configure(text=f'asking the camera for LED {mode}...',
+                                  fg='#003366')
+        self.root.update()
+        try:
+            worked, text = webcam_led.set_mode(mode, DEVICE)
+        except Exception as problem:                           # noqa: BLE001
+            worked, text = False, f'could not reach the camera: {problem}'
+        self.led_status.configure(text=text,
+                                  fg='#0a7a2a' if worked else '#aa0000')
+        if not worked and webcam_errors is not None:
+            webcam_errors.note('camera', f'LED {mode}: {text}')
 
     def on_preset(self, name):
         self.preset_status.configure(text=f'Applying {name}...')

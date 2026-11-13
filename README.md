@@ -704,6 +704,10 @@ and the next tier down does the work instead.
 
 ![What the detector finds, before and after the correction](docs/finding-cars-and-people.png)
 
+(That figure was made before the box colours were fixed: the vehicle box in it
+is orange, where the current code draws it blue. The colour tuple was in RGB
+order and OpenCV wanted BGR. Person boxes were green then and are green now.)
+
 The third box, **find cars and people and enhance them**, runs an object
 detector over the corrected still, and then gives whatever it found a second,
 stronger lift of its own - a gain and a CLAHE run on that region alone, feathered
@@ -774,6 +778,8 @@ conda and a pip OpenCV and one of them has to go.
 
 Nothing here reports "installed". Installed is not the question; every row is
 a small piece of real work, run on the spot.
+
+![The status rows, the six comparison frames, the legend and the LED buttons](docs/screenshot-status-tile.png)
 
 ### The four frames
 
@@ -909,6 +915,54 @@ terminal - started from cron, or from a desktop launcher - it prints the plan
 and installs nothing, unless `WEBCAM_AUTO_INSTALL=1` says to go ahead
 unattended. `WEBCAM_NO_BOOTSTRAP=1` skips the check entirely.
 
+## Turning the webcam's LED off
+
+Two buttons under the presets - **Turn the LED off** and **LED on** - with a
+line underneath saying what the camera actually did.
+
+Most webcams will not allow it. The privacy light is frequently wired to the
+sensor's own power rail, and on those cameras nothing in software can touch
+it: it comes on when the camera streams and that is the end of it. A few
+expose it as a UVC control called `led1_mode`, where 0 is off, 1 on, 2 blink
+and 3 auto.
+
+So the button does not report what it asked for. It sets the control, reads
+it back, and tells you what the camera says now:
+
+```
+led1_mode is now off                       it worked
+this camera does not expose its LED -      there is no such control, and
+  on most webcams the light is wired         no amount of trying will make
+  to the sensor and no software can          one appear
+  turn it off
+led1_mode was set to off but the camera    the control is there and the
+  reports on - it is ignoring the            firmware is ignoring it
+  setting, which some firmware does
+led1_mode has no usable values             the kernel bug below
+  (min=4 max=4)
+```
+
+A camera with no LED control keeps its buttons, greyed out, rather than
+losing them - so the row still answers "can I?" next time rather than looking
+like a feature that was never built.
+
+Two things worth knowing. There is a kernel regression - 6.1 to 6.3 and after,
+on some cameras - where `led1_mode` appears with `min=4 max=4` and no working
+values; that is named rather than reported as a camera that ignores you,
+because from the outside the two look identical. And where the driver never
+mapped the control at all, `uvcdynctrl -s 'LED1 Mode' 0` is tried as a
+fallback, if it is installed.
+
+To see for yourself what your camera offers:
+
+```
+v4l2-ctl -d /dev/video0 -L | grep -i led
+python3 webcam_led.py --status
+```
+
+Nothing in that output means nothing to be done - and that is the answer for
+most webcams, this one included if it has no `led1_mode` line.
+
 ## Files
 
 | File | What it is |
@@ -938,3 +992,4 @@ unattended. `WEBCAM_NO_BOOTSTRAP=1` skips the check entirely.
 | `webcam_errors.py` | the one log every OpenCV, TensorFlow, brain and correction failure goes to |
 | `~/Pictures/webcam/webcam-errors.log` | that log, rolled by size |
 | `~/Pictures/webcam/.../enhanced/compare/` | the six comparison frames the window shows |
+| `webcam_led.py` | turns the camera's LED off and on, where the camera allows it |

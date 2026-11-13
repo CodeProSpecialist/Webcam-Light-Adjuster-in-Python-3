@@ -274,9 +274,15 @@ def _write_thumb(source, target, width):
     image = cv2.imread(source, cv2.IMREAD_COLOR)
     if image is None:
         return 0, 0
+    # Scale down, never up. The close crop of a person is often narrower
+    # than the cell it goes in, and blowing it up to fill the cell only
+    # makes a blocky picture out of a sharp small one - the detail is not
+    # there to be had, and pretending otherwise hides how much there was.
+    width = min(int(width), int(image.shape[1]))
     height = max(1, int(round(image.shape[0] * (width / image.shape[1]))))
-    scaled = cv2.resize(image, (int(width), height),
-                        interpolation=cv2.INTER_AREA)
+    scaled = (image if width == image.shape[1] else
+              cv2.resize(image, (int(width), height),
+                         interpolation=cv2.INTER_AREA))
     os.makedirs(os.path.dirname(target), exist_ok=True)
     return (int(width), height) if cv2.imwrite(target, scaled) else (0, 0)
 
