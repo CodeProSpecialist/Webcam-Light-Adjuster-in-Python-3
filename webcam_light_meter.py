@@ -61,6 +61,13 @@ except ImportError:                                            # noqa: BLE001
     KEY_SAMPLE_SECONDS = 'sample_seconds'
     DEFAULT_SAMPLE_SECONDS = 300
 
+# Reads the controls back, so every adjustment can be recorded with the
+# camera's own values either side of it.
+try:
+    import webcam_verify as _verify
+except ImportError:                                            # noqa: BLE001
+    _verify = None
+
 # The brain's own module: it owns the harvest that builds a training set out of
 # this camera's frames, and the retraining that uses it. Importing it does not
 # import TensorFlow.
@@ -592,6 +599,13 @@ class LightMeter:
             if self.base:
                 log('learnt the baseline late, from the camera, because the '
                     'first pass could not read it', always=True)
+        # Every control the camera has, as it stands before anything is
+        # sent. Read in full rather than just the five being trimmed: the
+        # exposure time and the focus move on their own when the light
+        # changes, and seeing that happen beside the values that were asked
+        # for is most of the use of keeping the record at all.
+        before = _verify.read_controls(self.device) if _verify else {}
+
         self.wrote = {}
         for ctrl, fraction in TRIM_RULE.items():
             if ctrl not in self.base or ctrl not in self.ranges:
@@ -615,9 +629,27 @@ class LightMeter:
                 'Check that the camera is plugged in and v4l2-ctl works.',
                 always=True)
             return 0
-        self.set_sharpness(self.wrote.get('gain'))
+        sharp = self.set_sharpness(self.wrote.get('gain'))
         # The light just moved, so give the autofocus a fresh start on it.
         self.refocus()
+
+        # And the same controls again, afterwards. What was asked for and
+        # what the camera reports a moment later are different facts, and
+        # only the second one is what the picture is being taken with.
+        if _verify and before:
+            asked = dict(self.wrote)
+            if sharp is not None:
+                asked['sharpness'] = sharp
+            try:
+                # A moment first: a driver does not always report a new
+                # value the instant it is written, and reading too early
+                # would record a change that took as one that did not.
+                time.sleep(0.4)
+                after = _verify.read_controls(self.device)
+                _verify.track(f'light meter trim {self.trim:+d}',
+                              before, after, asked, self.device)
+            except Exception as problem:                       # noqa: BLE001
+                log(f'could not record the adjustment: {problem}')
         return len(self.wrote)
 
     # ---- the picture ----

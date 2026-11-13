@@ -303,6 +303,11 @@ def main():
         except IndexError:
             pass
 
+    if '--adjustments' in args:
+        text = adjustments()
+        print(text or f'nothing recorded yet ({ADJUST_LOG})')
+        return 0
+
     if '--coverage' in args:
         return print_coverage()
 
@@ -503,6 +508,150 @@ def print_coverage():
         print('\n  every quarter hour that has stills has corrected '
               'copies too')
     return 0 if not report['gaps'] else 1
+
+
+
+
+# ------------------------------------- before and after, for every adjustment
+
+
+# The controls worth recording either side of a change. Everything the camera
+# exposes is read anyway; these are the ones named in the record and checked
+# for having taken, because they are the ones that decide what the picture
+# looks like. Anything else the camera has is still recorded if it moved.
+TRACKED = [
+    'brightness', 'contrast', 'saturation', 'gain', 'sharpness',
+    'backlight_compensation', 'white_balance_temperature',
+    'white_balance_automatic', 'exposure_time_absolute', 'exposure_absolute',
+    'auto_exposure', 'exposure_auto', 'exposure_dynamic_framerate',
+    'exposure_auto_priority', 'focus_absolute',
+    'focus_automatic_continuous', 'focus_auto', 'zoom_absolute',
+]
+
+# The last before/after record, kept where the window can read it without
+# asking the camera again.
+ADJUST_LOG = os.path.join(
+    os.path.expanduser('~'), '.webcam-adjustments.log')
+ADJUST_KEEP = 400
+
+
+def track(stage, before, after, asked=None, device=DEVICE):
+    """Record one adjustment: what the controls were, what they are now, and
+    whether what was asked for is what happened.
+
+    This exists because "the program sent it" and "the camera took it" are
+    different facts and only the second one matters. v4l2-ctl reports success
+    for a write the camera ignores; a recorder holding the stream can put a
+    value back a moment later; and a driver may round a value to its own step
+    size. Reading the controls before and after, and writing down both, is the
+    only way to know which of those happened - and it turns "the picture did
+    not change" from a mystery into a line that says the camera reported the
+    old value afterwards.
+
+    `asked` is what was deliberately set this time, as name -> value. Controls
+    that moved without being asked are recorded too, and marked, because that
+    is either the camera's own automatic exposure doing its job or something
+    else writing to the device.
+    """
+    asked = asked or {}
+    names = set(before) | set(after)
+    rows = []
+    for name in sorted(names):
+        was, now = before.get(name), after.get(name)
+        if was == now and name not in asked:
+            continue
+        want = asked.get(name)
+        if name in asked:
+            state = ('took' if now == want else
+                     f'IGNORED (camera reports {now})' if was == now else
+                     f'rounded to {now}')
+        else:
+            state = 'moved on its own'
+        rows.append({'name': name, 'was': was, 'now': now,
+                     'asked': want, 'state': state})
+
+    asked_rows = [r for r in rows if r['asked'] is not None]
+    took = sum(1 for r in asked_rows if r['state'] == 'took')
+    line = (f'{time.strftime("%Y-%m-%d %H:%M:%S")}  {stage}  '
+            f'{took}/{len(asked_rows)} asked changes took')
+    detail = [line]
+    for row in rows:
+        want = '' if row['asked'] is None else f' (asked {row["asked"]})'
+        detail.append(f'    {row["name"]:<30} {row["was"]} -> {row["now"]}'
+                      f'{want}  {row["state"]}')
+    if not rows:
+        detail.append('    nothing moved')
+    text = '\n'.join(detail)
+
+    try:
+        with open(ADJUST_LOG, 'a', encoding='utf-8') as fh:
+            fh.write(text + '\n')
+        _trim_adjust_log()
+    except OSError:
+        pass
+
+    # A write that did not take is a failure, not a note, so it goes to the
+    # error log as well - which is what the window's terminal pane tails.
+    missed = [r for r in asked_rows if r['state'] != 'took']
+    if missed and webcam_errors is not None:
+        try:
+            webcam_errors.note(
+                'camera',
+                f'{stage}: ' + ', '.join(
+                    f'{r["name"]} asked {r["asked"]} but reports {r["now"]}'
+                    for r in missed))
+        except Exception:                                     # noqa: BLE001
+            pass
+    return rows
+
+
+def _trim_adjust_log():
+    """Keep the last ADJUST_KEEP blocks. Each adjustment is a block of lines,
+    so this counts the dated headers rather than the lines."""
+    try:
+        with open(ADJUST_LOG, encoding='utf-8') as fh:
+            lines = fh.readlines()
+    except OSError:
+        return
+    heads = [i for i, line in enumerate(lines) if not line.startswith('    ')]
+    if len(heads) <= ADJUST_KEEP:
+        return
+    try:
+        with open(ADJUST_LOG, 'w', encoding='utf-8') as fh:
+            fh.writelines(lines[heads[-ADJUST_KEEP]:])
+    except OSError:
+        pass
+
+
+def around(stage, change, asked=None, device=DEVICE, settle=0.4):
+    """Run `change`, with the controls read either side of it and recorded.
+
+    `change` is called with no arguments and may return the dict of what it
+    asked for, which is used when `asked` is not given. The pause afterwards
+    is there because a driver does not always report a new value the instant
+    it is written.
+    """
+    before = read_controls(device)
+    wanted = change() or {}
+    if asked is None:
+        asked = wanted if isinstance(wanted, dict) else {}
+    time.sleep(settle)
+    after = read_controls(device)
+    return track(stage, before, after, asked, device), before, after
+
+
+def adjustments(count=20):
+    """The last few adjustments, newest last."""
+    try:
+        with open(ADJUST_LOG, encoding='utf-8') as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ''
+    heads = [i for i, line in enumerate(lines) if not line.startswith('    ')]
+    if not heads:
+        return ''
+    start = heads[-count] if len(heads) > count else 0
+    return '\n'.join(lines[start:])
 
 
 if __name__ == '__main__':

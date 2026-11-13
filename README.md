@@ -984,6 +984,50 @@ crushed over five steps, with brightness taken from 6 to 21, contrast from 50
 to 65 and backlight compensation from 0 to 8. No frame was captured for any
 of it - the stills the recorder was already writing were the measurements.
 
+### Every adjustment, with the camera's own values either side
+
+"The program sent it" and "the camera took it" are different facts, and only
+the second one is what the picture is being taken with. `v4l2-ctl` reports
+success for a write the camera ignores. A recorder holding the stream can put
+a value back a moment later. A driver may round a value to its own step size
+and report that instead.
+
+So every adjustment is recorded with **every control read before it and read
+again afterwards** - brightness, contrast, gain, saturation, sharpness,
+backlight compensation, white balance, exposure time, the exposure mode and
+its dynamic framerate, focus and zoom. Not only the ones being changed: the
+exposure time and the focus move on their own when the light changes, and
+seeing that happen beside the values that were asked for is most of the use of
+keeping the record at all.
+
+```
+python3 webcam_verify.py --adjustments
+```
+
+```
+2026-11-13 02:47:34  light meter trim +1  5/6 asked changes took
+    backlight_compensation         6 -> 8 (asked 8)  took
+    brightness                     24 -> 24 (asked 27)  IGNORED (camera reports 24)
+    contrast                       68 -> 71 (asked 71)  took
+    exposure_time_absolute         157 -> 96  moved on its own
+    gain                           100 -> 100 (asked 100)  took
+    saturation                     2 -> 0 (asked 0)  took
+```
+
+Four different things are told apart there, and they need different answers:
+**took**, **IGNORED** where the camera reports the old value back, **rounded**
+where the driver kept something near what was asked, and **moved on its own**
+for a control nobody here touched - which is either the camera's automatic
+exposure doing its job or something else writing to the device.
+
+A value that did not take also goes to the error log, so it shows up in the
+window's terminal pane rather than only in a file. The same log is written by
+both repos, in the same format, so one file covers whichever is running.
+
+This is the counterpart to the trim fix above. That one stopped the loop
+claiming a correction it never sent; this one shows whether what *was* sent
+survived contact with the camera.
+
 ### It no longer claims a correction it did not make
 
 The trim is worked out as a step away from the preset's own values, so it
@@ -1194,3 +1238,4 @@ camera it is genuinely useful, which is why it is still there.
 | `~/Pictures/webcam/.../enhanced/compare/` | the six comparison frames the window shows |
 | `webcam_led.py` | turns the camera's LED off and on, where the camera allows it |
 | `webcam_verify.py` | reads the controls back, measures the picture, walks the night preset back when it crushes the frame |
+| `~/.webcam-adjustments.log` | every adjustment, with every control read before and after it |
