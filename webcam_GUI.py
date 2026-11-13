@@ -121,6 +121,11 @@ try:
 except ImportError:                                               # noqa: BLE001
     webcam_status = None
 
+try:
+    import webcam_lock
+except ImportError:                                               # noqa: BLE001
+    webcam_lock = None
+
 DEVICE = os.environ.get('WEBCAM_DEVICE', '/dev/video0')
 
 _CONTROL_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((int|bool|menu|intmenu)\)', re.I)
@@ -145,6 +150,14 @@ PREFERRED = [
 # frequent; the reload reads and scales six JPEGs, so it should not be.
 COMPARE_POLL_MS = 3000
 COMPARE_FORCE_MS = 30000
+
+# The lock panel: twenty of the newest detection crops to choose a target
+# from, laid out five across and four down under the comparison frames, and
+# how often the list is looked at again.
+LOCK_BOXES = 20
+LOCK_COLUMNS = 5
+LOCK_THUMB_WIDTH = 132
+LOCK_POLL_MS = 8000
 
 TERMINAL_COLS = 80
 TERMINAL_ROWS = 15
@@ -564,6 +577,7 @@ class Window:
         self.terminal = TerminalPane(self.page, root, TERMINAL_SCRIPT, side='top')
         self.build_brain_info()
         self.build_status_tile()
+        self.build_lock_panel()
         self.size_to_fit()
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         if self.meter:
@@ -1452,6 +1466,293 @@ class Window:
         self.status_queue = queue.Queue()
         self.refresh_status_tile()
         self.root.after(COMPARE_POLL_MS, self.poll_compare_frames)
+
+    # ---- the locked-on target ----
+
+    def build_lock_panel(self):
+        """The twenty picture boxes, and the lock.
+
+        Why a locked target at all. Everything above this meters the whole
+        frame: the light meter averages it, the CLAHE spreads it, the detector
+        lifts whatever it finds. That is the right default and it is also why
+        the car across the road comes out badly - it is two per cent of the
+        frame, so the security light at the far end of the yard wins every
+        argument about exposure. Pick that car here and the arguments are
+        settled in its favour instead, around the clock: the light meter aims
+        its target brightness at the car and its bit of kerb rather than at
+        the whole yard, and the enhancer gives that box the hardest lift and
+        the crop it keeps.
+
+        Two ways to pick, because a mouse and a keyboard suit different
+        moments: click the picture itself, or use the Lock button under it.
+        Either locks on; "Unlock" goes back to metering the whole frame.
+
+        The pictures are the detector's own crops - the folder of cars rather
+        than the folder of the yard with a car in the corner of it - newest
+        first. They only appear once the detector has found something, so an
+        empty panel on a first run is an ordinary quiet night and says so
+        rather than looking broken.
+        """
+        frame = tk.LabelFrame(
+            self.page,
+            text='  lock on to a car or object to watch 24 hours a day  ',
+            font=('Helvetica', 9, 'bold'))
+        frame.pack(side='top', fill='x', expand=False, padx=4, pady=(2, 10))
+        self.lock_frame = frame
+
+        if webcam_lock is None:
+            tk.Label(frame, text='webcam_lock.py is not next to this file, so '
+                                 'there is nothing to lock on with',
+                     anchor='w', font=('Helvetica', 8), fg='#aa0000').pack(
+                         fill='x', padx=6, pady=4)
+            return
+
+        bar = tk.Frame(frame)
+        bar.pack(fill='x', padx=4, pady=(2, 0))
+        self.lock_summary = tk.Label(bar, text='', anchor='w',
+                                     font=('Helvetica', 8, 'bold'),
+                                     fg='#003366')
+        self.lock_summary.pack(side='left', padx=4)
+        tk.Button(bar, text='Unlock - meter the whole frame again',
+                  font=('Helvetica', 8),
+                  command=self.on_unlock).pack(side='right', padx=2)
+        tk.Button(bar, text='Refresh the pictures', font=('Helvetica', 8),
+                  command=self.load_lock_crops).pack(side='right', padx=2)
+
+        tk.Label(frame, anchor='w', justify='left', font=('Helvetica', 8),
+                 fg='#333333', wraplength=740,
+                 text=('Click a picture, or press its Lock button, to make '
+                       'that object the target. The light meter then exposes '
+                       'for it instead of for the whole frame, and the '
+                       'enhancer gives it the strongest lift - day and night, '
+                       'until it is unlocked.')).pack(fill='x', padx=6,
+                                                      pady=(1, 3))
+
+        # The current target, shown as a picture of its own so that what is
+        # locked is never in doubt - a label saying "car" is true of every
+        # car on the street.
+        current = tk.Frame(frame)
+        current.pack(fill='x', padx=6, pady=(0, 4))
+        tk.Label(current, text='locked target:', font=('Helvetica', 8, 'bold'),
+                 anchor='w').pack(side='left')
+        self.lock_current_image = None
+        self.lock_current_label = tk.Label(current, text='(none)',
+                                           font=('Helvetica', 8),
+                                           fg='#888888', bg='#101010',
+                                           width=20, height=5)
+        self.lock_current_label.pack(side='left', padx=6)
+        self.lock_current_note = tk.Label(current, text='', anchor='w',
+                                          justify='left',
+                                          font=('Helvetica', 8), fg='#333333',
+                                          wraplength=520)
+        self.lock_current_note.pack(side='left', fill='x', expand=True)
+
+        self.lock_note = tk.Label(frame, text='', anchor='w',
+                                  font=('Helvetica', 8), fg='#666666',
+                                  justify='left', wraplength=740)
+        self.lock_note.pack(fill='x', padx=6)
+
+        # The twenty boxes. Built empty and filled by load_lock_crops, so the
+        # window maps at once rather than waiting on twenty JPEGs being
+        # scaled.
+        self.lock_cells = []
+        self.lock_images = {}        # index -> PhotoImage, held against GC
+        self.lock_paths = {}         # index -> the crop that box is showing
+        grid = tk.Frame(frame)
+        grid.pack(fill='x', padx=6, pady=(2, 4))
+        for index in range(LOCK_BOXES):
+            row, column = divmod(index, LOCK_COLUMNS)
+            cell = tk.Frame(grid, bd=1, relief='sunken')
+            cell.grid(row=row, column=column, padx=3, pady=3, sticky='n')
+            picture = tk.Label(cell, text='(empty)', font=('Helvetica', 7),
+                               fg='#777777', bg='#101010', width=18, height=5,
+                               cursor='hand2')
+            picture.pack()
+            picture.bind('<Button-1>',
+                         lambda _event, which=index: self.on_lock_pick(which))
+            caption = tk.Label(cell, text='', font=('Helvetica', 7),
+                               fg='#222222', anchor='w')
+            caption.pack(fill='x')
+            button = tk.Button(cell, text='Lock', font=('Helvetica', 7),
+                               state='disabled',
+                               command=lambda which=index:
+                               self.on_lock_pick(which))
+            button.pack(fill='x')
+            self.lock_cells.append((picture, caption, button))
+
+        self.load_lock_crops()
+        self.root.after(LOCK_POLL_MS, self.poll_lock_crops)
+
+    def load_lock_crops(self):
+        """Put the newest crops in the boxes, and say what is locked."""
+        if webcam_lock is None or not getattr(self, 'lock_cells', None):
+            return
+        try:
+            crops = webcam_lock.recent_crops(LOCK_BOXES)
+        except Exception as problem:                           # noqa: BLE001
+            self.lock_note.configure(
+                text=f'could not read the detection crops: {problem}',
+                fg='#aa0000')
+            return
+        self.lock_seen_count = len(crops)
+
+        for index, (picture, caption, button) in enumerate(self.lock_cells):
+            item = crops[index] if index < len(crops) else None
+            if item is None:
+                picture.configure(image='', text='(empty)', fg='#777777',
+                                  width=18, height=5)
+                caption.configure(text='')
+                button.configure(state='disabled', text='Lock',
+                                 bg=self.root.cget('bg'))
+                self.lock_images.pop(index, None)
+                self.lock_paths.pop(index, None)
+                continue
+            self.lock_paths[index] = item['path']
+            thumb = {'path': '', 'width': 0, 'height': 0}
+            if webcam_status is not None:
+                try:
+                    thumb = webcam_status.crop_thumb(item['path'],
+                                                     LOCK_THUMB_WIDTH)
+                except Exception:                              # noqa: BLE001
+                    pass
+            if thumb['path']:
+                try:
+                    photo = tk.PhotoImage(file=thumb['path'])
+                    self.lock_images[index] = photo
+                    picture.configure(image=photo, text='',
+                                      width=thumb['width'],
+                                      height=thumb['height'])
+                except Exception as problem:                   # noqa: BLE001
+                    picture.configure(image='', text=f'(unreadable: {problem})',
+                                      fg='#aa0000')
+            else:
+                picture.configure(image='', text='(no thumbnail)',
+                                  fg='#777777')
+            caption.configure(text=f"{item['label']}  {item['stamp'][-8:]}")
+            if item.get('is_locked'):
+                button.configure(state='normal', text='LOCKED', bg='#bbeebb')
+                picture.configure(bd=3, relief='solid')
+            else:
+                button.configure(state='normal', text='Lock',
+                                 bg=self.root.cget('bg'))
+                picture.configure(bd=0, relief='flat')
+
+        if crops:
+            self.lock_note.configure(
+                text=f'{len(crops)} of the newest detections shown, newest '
+                     f'first - from {os.path.dirname(crops[0]["path"])}',
+                fg='#666666')
+        else:
+            self.lock_note.configure(
+                text='no detections yet - these boxes fill up as the '
+                     'detector finds cars and people in the corrected '
+                     'frames, so an empty panel on a first run is normal',
+                fg='#666666')
+        self.refresh_lock_summary()
+
+    def refresh_lock_summary(self):
+        """The line at the top of the panel, and the picture of the target."""
+        if webcam_lock is None:
+            return
+        try:
+            data = webcam_lock.read_lock()
+            self.lock_summary.configure(text=webcam_lock.describe(),
+                                        fg='#006600' if data else '#003366')
+        except Exception as problem:                           # noqa: BLE001
+            self.lock_summary.configure(text=f'could not read the lock: '
+                                             f'{problem}', fg='#aa0000')
+            return
+        if not data:
+            self.lock_current_label.configure(image='', text='(none)',
+                                              fg='#888888', width=20, height=5)
+            self.lock_current_image = None
+            self.lock_current_note.configure(
+                text='nothing locked - the light meter is exposing for the '
+                     'whole frame, which is the default')
+            return
+        thumb = {'path': '', 'width': 0, 'height': 0}
+        if webcam_status is not None:
+            try:
+                thumb = webcam_status.crop_thumb(data['path'], 160,
+                                                 tag='current')
+            except Exception:                                  # noqa: BLE001
+                pass
+        if thumb['path']:
+            try:
+                photo = tk.PhotoImage(file=thumb['path'])
+                self.lock_current_image = photo
+                self.lock_current_label.configure(image=photo, text='',
+                                                  width=thumb['width'],
+                                                  height=thumb['height'])
+            except Exception:                                  # noqa: BLE001
+                pass
+        self.lock_current_note.configure(
+            text=(f"the light meter is exposing for this "
+                  f"{data.get('label', 'object')} and the enhancer is giving "
+                  f"it the strongest lift. Picked from "
+                  f"{os.path.basename(data.get('source', '') or '')}"))
+
+    def on_lock_pick(self, index):
+        """Lock on to whatever is in that box."""
+        if webcam_lock is None:
+            return
+        path = self.lock_paths.get(index)
+        if not path:
+            return
+        try:
+            data = webcam_lock.set_lock(path)
+        except Exception as problem:                           # noqa: BLE001
+            self.lock_note.configure(text=f'could not lock on: {problem}',
+                                     fg='#aa0000')
+            return
+        if not data:
+            self.lock_note.configure(
+                text='could not lock on that picture - it may have been '
+                     'pruned out of the detections folder since the panel '
+                     'was last refreshed', fg='#aa0000')
+            self.load_lock_crops()
+            return
+        self.terminal.write(f"locked on to the {data.get('label', 'object')} "
+                            f"in {os.path.basename(path)} - the light meter "
+                            f"and the enhancer now work to this target",
+                            tag=None)
+        self.load_lock_crops()
+
+    def on_unlock(self):
+        """Back to metering the whole frame."""
+        if webcam_lock is None:
+            return
+        try:
+            webcam_lock.clear_lock()
+        except Exception as problem:                           # noqa: BLE001
+            self.lock_note.configure(text=f'could not unlock: {problem}',
+                                     fg='#aa0000')
+            return
+        self.terminal.write('unlocked - metering the whole frame again',
+                            tag=None)
+        self.load_lock_crops()
+
+    def poll_lock_crops(self):
+        """Pick up new detections without being asked, cheaply: a count of
+        the newest crops, and a reload only when it has changed or when the
+        lock itself has."""
+        try:
+            if webcam_lock is not None and getattr(self, 'lock_cells', None):
+                crops = webcam_lock.recent_crops(LOCK_BOXES)
+                newest = crops[0]['path'] if crops else ''
+                locked = (webcam_lock.read_lock() or {}).get('source', '')
+                stamp = (newest, len(crops), locked)
+                if stamp != getattr(self, 'lock_stamp', None):
+                    self.lock_stamp = stamp
+                    self.load_lock_crops()
+                else:
+                    # Still worth redrawing the one line that says when the
+                    # target was last found, which moves on its own.
+                    self.refresh_lock_summary()
+        except Exception:                                      # noqa: BLE001
+            pass
+        finally:
+            self.root.after(LOCK_POLL_MS, self.poll_lock_crops)
 
     def refresh_status_tile(self):
         """Run the checks off the main thread and redraw when they land.

@@ -630,6 +630,19 @@ def _oops(where, problem=None, detail='', once_key=''):
         webcam_errors.report(where, problem, detail=detail)
 
 
+# The extra lift the locked-on target gets, over and above the ordinary
+# detector boost every car and person gets. Modest on purpose: this is the one
+# object the picture is being kept for, so it is worth lifting harder than the
+# rest of the frame, and it is still a photograph of a car rather than a white
+# silhouette of one.
+LOCK_BOOST_GAIN = 1.35
+
+try:
+    import webcam_lock
+except ImportError:
+    webcam_lock = None       # no lock module: every box treated alike
+
+
 def _cv2():
     """OpenCV, if it is installed. Everything here works without it, through
     ImageMagick; with it, the work is done in one process on arrays rather
@@ -894,6 +907,28 @@ class Enhancer:
                 boxes = detector.detect(result)
                 self.detections = boxes
                 if boxes:
+                    # The locked-on target first, when one is set and it is in
+                    # this frame. It gets a lift of its own on top of the
+                    # ordinary boost, because the whole reason for locking on
+                    # is that this one object is what the picture is for - and
+                    # it is put at the head of the list so that its crop is
+                    # the first one written and the one the window shows.
+                    if webcam_lock is not None and webcam_lock.locked():
+                        try:
+                            pick = webcam_lock.preferred_box(boxes, result)
+                        except Exception as problem:          # noqa: BLE001
+                            pick = None
+                            _oops('night correction.lock', problem,
+                                  detail='locked target not matched this frame',
+                                  once_key='lock')
+                        if pick is not None:
+                            result = detector.boost(result, [pick],
+                                                    gain=LOCK_BOOST_GAIN)
+                            boxes = ([pick] +
+                                     [b for b in boxes if b is not pick])
+                            done.append('locked target given its own lift')
+                        else:
+                            done.append('locked target not in this frame')
                     result = detector.boost(result, boxes)
                     done.append(f'found and boosted {detector.summary(boxes)}')
                     folder = os.path.dirname(out_path)

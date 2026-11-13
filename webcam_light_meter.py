@@ -64,6 +64,11 @@ except ImportError:                                            # noqa: BLE001
 # Reads the controls back, so every adjustment can be recorded with the
 # camera's own values either side of it.
 try:
+    import webcam_lock
+except ImportError:
+    webcam_lock = None       # no lock module: meter the whole frame, as before
+
+try:
     import webcam_verify as _verify
 except ImportError:                                            # noqa: BLE001
     _verify = None
@@ -131,17 +136,37 @@ MAX_COLD = 0.300       # at most 30% of the frame crushed to black
 # level lift rather than exposure, so it buys apparent brightness at the cost
 # of the black end, which is the mistake the old maximum-brightness night
 # preset made. Contrast rises with the trim to keep the range spread out once
-# gain has lifted everything. Saturation comes DOWN as the trim goes up, which
-# is the "a little bit less colour at night" part - colour is never switched
-# off at any trim, there is just less of it when the gain is high and most of
-# what is left is noise.
+# gain has lifted everything.
+#
+# Saturation used to be in here, coming down as the trim went up. It is out
+# now, deliberately: the colour level a preset asks for is the colour level
+# that is wanted, at every hour, and a meter quietly walking it down five
+# steps into the night is the meter overruling the preset about how the
+# picture should look. The colour that is wanted at night is set in the night
+# preset itself, where it can be seen and changed. See LOCKED_CONTROLS below.
 TRIM_RULE = {
     'gain': 0.120,
     'brightness': 0.025,
     'contrast': 0.030,
-    'saturation': -0.025,
     'backlight_compensation': 0.200,
 }
+
+# The controls this loop is not allowed to move, whatever the picture looks
+# like.
+#
+# Saturation and hue belong to the preset outright: they decide what the
+# colours *are*, not how bright the frame is, and no amount of metering the
+# grey level is evidence about either. Gamma is the awkward one and gets a
+# rule of its own below - it does change brightness, which is exactly why it
+# is tempting, and raising it is the cheapest-looking way to brighten a night
+# frame. It is also the worst: gamma lifts the noise floor along with the
+# shadows and flattens the midtones the number plate lives in, and it does it
+# to the stream the recorder is writing rather than to a copy. So gamma may be
+# left where the preset put it or pulled back DOWN from there, and never
+# raised above it. The software correction, which works on copies of the
+# stills and can be deleted and redone, is where a gamma lift belongs.
+LOCKED_CONTROLS = ('saturation', 'hue')
+GAMMA_CTRL = 'gamma'
 
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
@@ -165,8 +190,21 @@ SNAP_KEEP = 30
 # reason to ease off at all once the gain is high.
 SHARP_DAY = 1.00       # at or below half gain: full sharpness
 SHARP_NIGHT = 0.90     # just into high gain
-SHARP_DARK = 0.80      # at the top of the gain range
+SHARP_DARK = 0.70      # at the top of the gain range
 SHARP_KNEE = 0.50      # the gain fraction where the easing off starts
+
+# And the two ends sharpness is never allowed outside of, whatever the curve
+# above works out and whatever a preset asked for: half sharpness at the very
+# least, full sharpness at the very most.
+#
+# The floor is the useful half of this. Sharpening amplifies grain, so the
+# honest night answer looks like "turn it down", and turned down far enough
+# the picture is a smooth grey blur with no edge left to read a number plate
+# off - grain-free and useless. Half is the point below which this stops
+# buying anything. The ceiling only says there is no such thing as more than
+# all of a control.
+SHARP_FLOOR = 0.50
+SHARP_CEIL = 1.00
 
 # The ranges to use when the camera does not report one.
 #
@@ -201,6 +239,33 @@ FALLBACK_LEGACY = {
 # pre-5.10 kernel name on the older webcam.
 FOCUS_CTRL = 'focus_automatic_continuous'
 FOCUS_CTRL_LEGACY = 'focus_auto'
+
+# The manual focus control, read so that the preset's focus distance can be
+# kept and gone back to.
+FOCUS_ABS_CTRL = 'focus_absolute'
+
+# How far the focus may wander from where the preset left it before it is put
+# back, as a fraction of the control's range. Twelve per cent is about a foot
+# at the distance these cameras are aimed at: enough slack for the autofocus
+# to find the edge of a car properly, not enough for it to give up and go
+# hunting the fence behind it or the moth in front of it.
+FOCUS_WINDOW = 0.12
+
+# How blurry the picture has to be before the autofocus is allowed to re-run.
+#
+# This is the variance of the Laplacian - the standard "is it in focus" number
+# - taken on a quarter size grey copy. A sharp daylight frame from this camera
+# runs in the hundreds; a frame that has lost focus runs in the low tens. The
+# night threshold is lower because a correctly focused night frame is
+# genuinely less detailed than a correctly focused day one, and judging night
+# by the day number would have the autofocus hunting all night, which is the
+# exact behaviour that puts a soft first few seconds into every recording.
+#
+# Below the threshold: refocus, which is the one case it is wanted. At or
+# above: leave the focus alone and, if it has drifted outside FOCUS_WINDOW of
+# the preset, put it back where the preset had it.
+BLUR_DAY = 55.0
+BLUR_NIGHT = 22.0
 
 _RANGE_RE = re.compile(r'^\s*(\w+)\s+0x[0-9a-f]+\s+\((?:int|bool|menu|intmenu)\)', re.I)
 _VALUE_RE = re.compile(r'(\w+):\s*(-?\d+)')
@@ -315,6 +380,13 @@ class LightMeter:
         self.sources = {}       # control -> 'camera' or 'fallback', for reporting
         self.camera_kind = 'unknown'
         self.focus_ctrl = None      # whichever autofocus control this camera has
+        self.focus_abs = None       # the manual focus control, if there is one
+        self.focus_range = None     # its range, for the drift window
+        self.focus_base = None      # where the preset left the focus
+        self.locked_have = ()       # which hands-off controls this camera has
+        self.locked_base = {}       # and the values the preset gave them
+        self.blur = None            # the last blur reading, for the status line
+        self.lock_note = ''         # what the locked-on target did this pass
         self.base = {}          # the preset's own values, re-learnt automatically
         self.wrote = {}         # what this loop last sent, to spot outside changes
         self.trim = 0
@@ -377,6 +449,25 @@ class LightMeter:
         self.focus_ctrl = (FOCUS_CTRL if FOCUS_CTRL in seen
                            else FOCUS_CTRL_LEGACY if FOCUS_CTRL_LEGACY in seen
                            else None)
+
+        # The manual focus control, if the camera has one. Only read, and
+        # only ever written back to the value the preset asked for.
+        self.focus_abs = FOCUS_ABS_CTRL if FOCUS_ABS_CTRL in seen else None
+        if self.focus_abs:
+            for line in _run(['v4l2-ctl', '-d', self.device, '-L']).splitlines():
+                if not line.strip().startswith(FOCUS_ABS_CTRL):
+                    continue
+                low = re.search(r'min=(-?\d+)', line)
+                high = re.search(r'max=(-?\d+)', line)
+                if low and high and int(high.group(1)) > int(low.group(1)):
+                    self.focus_range = (int(low.group(1)), int(high.group(1)))
+
+        # Which of the hands-off controls this camera actually has, so that
+        # the guard below reads back only what exists.
+        self.locked_have = tuple(name for name in
+                                 tuple(LOCKED_CONTROLS) + (GAMMA_CTRL,)
+                                 if name in seen)
+        self.learn_locked()
 
         # The same test the preset engine uses to tell the two cameras apart.
         if 'exposure_time_absolute' in seen:
@@ -549,6 +640,177 @@ class LightMeter:
             return line
         return None
 
+    # ---- the controls this loop keeps its hands off ----
+
+    def learn_locked(self):
+        """Read saturation, hue and gamma as the preset left them.
+
+        These are not trimmed, so the only reason to read them is to be able
+        to tell later whether they are still where the preset put them - and,
+        for gamma, what the ceiling is. Re-read whenever the baseline is
+        re-learnt, because a preset firing is exactly when they legitimately
+        change.
+        """
+        names = list(self.locked_have)
+        if self.focus_abs:
+            names.append(self.focus_abs)
+        if not names:
+            return {}
+        out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl',
+                    ','.join(names)])
+        found = {k: int(v) for k, v in _VALUE_RE.findall(out)}
+        if self.focus_abs and self.focus_abs in found:
+            self.focus_base = found.pop(self.focus_abs)
+        self.locked_base = {k: v for k, v in found.items()
+                            if k in self.locked_have}
+        return self.locked_base
+
+    def guard_locked(self):
+        """Put saturation, hue and gamma back if they have moved off the
+        preset - and, for gamma, only ever downwards.
+
+        Nothing in this loop writes them, so in normal running this finds
+        nothing and costs one read. It is here for the case that is not normal
+        running: another script, a half-finished preset, or a driver that
+        resets a control when the exposure mode changes. Without it a gamma
+        that got raised once would stay raised for the rest of the night with
+        the correction dutifully metering around it.
+
+        Returns a note naming what it had to undo, or ''.
+        """
+        if not self.locked_have or not self.locked_base:
+            return ''
+        out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl',
+                    ','.join(self.locked_have)])
+        have = {k: int(v) for k, v in _VALUE_RE.findall(out)}
+        fixed = []
+        for name, want in self.locked_base.items():
+            now = have.get(name)
+            if now is None or now == want:
+                continue
+            if name == GAMMA_CTRL and now < want:
+                # Pulled down, not up. Allowed, and worth keeping: a lower
+                # gamma holds the midtones together. Take it as the new
+                # ceiling rather than undoing it.
+                self.locked_base[name] = now
+                continue
+            _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
+                  f'{name}={want}'])
+            fixed.append(f'{name} {now} -> {want}')
+        if fixed:
+            log('put the hands-off controls back: ' + ', '.join(fixed),
+                always=True)
+            return 'restored ' + ', '.join(fixed)
+        return ''
+
+    # ---- focus ----
+
+    def blur_score(self, path):
+        """How sharp the picture actually is: the variance of its Laplacian.
+
+        A big number is a detailed picture, a small one is a soft picture, and
+        the useful property is that it does not care how bright the frame is -
+        which is what makes it the right test here, where the frame is dark
+        half the time by design.
+
+        OpenCV when it is there, and ImageMagick's own standard deviation of
+        an edge-detected copy when it is not, scaled to roughly the same
+        numbers. None when neither is available, which means "no opinion" and
+        leaves the focus alone.
+        """
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            import cv2                                        # noqa: PLC0415
+            image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if image is not None and image.size:
+                small = cv2.resize(image, (0, 0), fx=0.5, fy=0.5,
+                                   interpolation=cv2.INTER_AREA)
+                return float(cv2.Laplacian(small, cv2.CV_64F).var())
+        except Exception:                                     # noqa: BLE001
+            pass
+        magick = _magick()
+        if not magick:
+            return None
+        out = _run([magick, path, '-colorspace', 'Gray', '-resize', '50%',
+                    '-define', 'convolve:scale=!', '-morphology', 'Convolve',
+                    'Laplacian:0', '-format', '%[fx:standard_deviation*255]',
+                    'info:'])
+        found = re.search(r'[\d.]+', out)
+        if not found:
+            return None
+        # ImageMagick gives a standard deviation; the Laplacian variance is
+        # its square, which is what the thresholds are written in.
+        return float(found.group()) ** 2
+
+    def blur_limit(self, gain_now=None):
+        """The blur threshold for how dark it is now."""
+        fraction = self.gain_fraction(gain_now)
+        if fraction is None:
+            return BLUR_DAY
+        if fraction <= SHARP_KNEE:
+            return BLUR_DAY
+        into_dark = (fraction - SHARP_KNEE) / (1 - SHARP_KNEE)
+        return BLUR_DAY - (BLUR_DAY - BLUR_NIGHT) * into_dark
+
+    def hold_focus(self):
+        """Put the focus back near where the preset left it.
+
+        Only when it has drifted further than FOCUS_WINDOW, and only to the
+        preset's own value - this never picks a focus distance of its own.
+        Continuous autofocus is switched back on afterwards, because nothing
+        in these scripts leaves the camera in manual focus.
+        """
+        if not self.focus_abs or self.focus_base is None or not self.focus_range:
+            return ''
+        low, high = self.focus_range
+        window = max(1, int(round(FOCUS_WINDOW * (high - low))))
+        out = _run(['v4l2-ctl', '-d', self.device, '--get-ctrl',
+                    self.focus_abs])
+        found = _VALUE_RE.search(out)
+        if not found:
+            return ''
+        now = int(found.group(2))
+        if abs(now - self.focus_base) <= window:
+            return ''
+        ctrl = self.focus_ctrl or FOCUS_CTRL
+        _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}=0'])
+        _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
+              f'{self.focus_abs}={self.focus_base}'])
+        time.sleep(0.2)
+        _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'{ctrl}=1'])
+        log(f'focus had drifted to {now}, put back to the preset\'s '
+            f'{self.focus_base}', always=True)
+        return f'focus put back to {self.focus_base}'
+
+    def maybe_refocus(self, path=None, gain_now=None):
+        """Refocus only when the picture is actually blurry.
+
+        The old behaviour was to re-run the autofocus after every light
+        change, on the grounds that the first seconds after a change come out
+        soft. That is true and it is also how the focus ends up somewhere the
+        preset never asked for: every trim sent the autofocus hunting, and a
+        night scene with nothing well-lit to lock on to is precisely the scene
+        it hunts worst in. Hunting is worse than a slightly stale focus.
+
+        So the picture gets measured first. Blurry - refocus, which is the
+        case the refocus was put in for. Sharp enough - leave the focus
+        alone and only pull it back if it has wandered out of the window
+        around the preset.
+        """
+        self.blur = self.blur_score(path) if path else None
+        limit = self.blur_limit(gain_now)
+        if self.blur is None:
+            # Nothing to judge by. Hold the preset's focus rather than
+            # starting a search in the dark.
+            return self.hold_focus()
+        if self.blur < limit:
+            log(f'picture is blurry (sharpness score {self.blur:.0f}, '
+                f'wanted {limit:.0f}) - refocusing')
+            self.refocus()
+            return f'blurry ({self.blur:.0f} < {limit:.0f}) - refocused'
+        return self.hold_focus()
+
     def sharpness_for(self, gain_now):
         """The sharpness this much gain calls for, in the control's own
         units. None when the camera has no sharpness control or no gain to
@@ -565,6 +827,11 @@ class LightMeter:
             # Straight line from 90% at the knee down to 80% at full gain.
             into_dark = (fraction - SHARP_KNEE) / (1 - SHARP_KNEE)
             want = SHARP_NIGHT - (SHARP_NIGHT - SHARP_DARK) * into_dark
+        # Clamped to the 50-100% band before it is turned into the
+        # control's own units, so the curve above can be changed freely
+        # without any edit of it being able to put the picture outside the
+        # band that is wanted.
+        want = max(SHARP_FLOOR, min(SHARP_CEIL, want))
         value = int(round(sharp_low + (sharp_high - sharp_low) * want))
         return max(sharp_low, min(sharp_high, value))
 
@@ -630,8 +897,14 @@ class LightMeter:
                 always=True)
             return 0
         sharp = self.set_sharpness(self.wrote.get('gain'))
-        # The light just moved, so give the autofocus a fresh start on it.
-        self.refocus()
+        # Saturation, hue and gamma are not trimmed; check nothing else moved
+        # them, and pull gamma back down if it was raised.
+        self.guard_locked()
+        # The light just moved. Whether that costs any sharpness is a question
+        # about the picture, so it is answered from the picture rather than
+        # assumed: refocus if it has actually gone soft, otherwise hold the
+        # preset's focus distance.
+        self.maybe_refocus(self.find_snapshot(), self.wrote.get('gain'))
 
         # And the same controls again, afterwards. What was asked for and
         # what the camera reports a moment later are different facts, and
@@ -911,6 +1184,26 @@ class LightMeter:
         magick = _magick()
         if not magick:
             return None
+        # The locked-on target, when there is one. Everything below is
+        # unchanged - it just runs on a crop of the target and its
+        # surroundings instead of on the whole frame, which is the whole
+        # point of locking on: the exposure is then decided by the car, and
+        # the floodlight at the far end of the yard gets a vote proportional
+        # to how much of the car it lights rather than to how bright it is.
+        self.lock_note = ''
+        if webcam_lock is not None and webcam_lock.locked():
+            try:
+                found = webcam_lock.region_from_file(path)
+            except Exception as problem:                      # noqa: BLE001
+                found = None
+                log(f'could not find the locked target: {problem}')
+            if found and found.get('path'):
+                path = found['path']
+                self.lock_note = (f"metering the locked {found['label']} "
+                                  f"({found['how']})")
+            else:
+                self.lock_note = ('locked target not found in this frame - '
+                                  'metering the whole frame')
         mean = _run([magick, path, '-colorspace', 'Gray', '-resize', '25%',
                      '-format', '%[fx:mean*255]', 'info:'])
         found = re.search(r'[\d.]+', mean)
@@ -969,8 +1262,16 @@ class LightMeter:
                 # The preset just overwrote sharpness with its own value, so
                 # put the wanted sharpness back for the gain it runs at.
                 sharp = self.set_sharpness(have.get('gain'))
-                # A preset just changed the light, so refocus for it as well.
-                self.refocus()
+                # The preset owns saturation, hue, gamma and the focus
+                # distance, so whatever it just set them to is the new
+                # reference the guard holds them at.
+                self.learn_locked()
+                # A preset just changed the light. Measure the picture before
+                # deciding whether the focus needs anything: a preset change
+                # does not make a sharp picture blurry, and the old
+                # refocus-on-every-change is what used to walk the focus off
+                # the distance the preset was set up for.
+                self.maybe_refocus(self.find_snapshot(), have.get('gain'))
                 # A preset or a hand on a slider just changed the light. This
                 # is exactly the moment worth filing: the scene is the same and
                 # the exposure is different, which is how the training set gets
@@ -1081,6 +1382,8 @@ class LightMeter:
 
         return (f'light meter: trim {self.trim:+d}, mean {middle:.0f} of target '
                 f'{self.target}, white {hot * 100:.1f}%, black {cold * 100:.0f}% - {why}'
+                + (f' | sharpness score {self.blur:.0f}' if self.blur else '')
+                + (f' | {self.lock_note}' if self.lock_note else '')
                 + (f' | {enhanced}' if enhanced else ''))
 
     def sleep_with_metering(self, seconds, report=print):

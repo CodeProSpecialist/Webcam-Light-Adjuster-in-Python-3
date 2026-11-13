@@ -310,6 +310,62 @@ def thumbnails(total_width=760, folder=None):
     return out
 
 
+def crop_thumb(source, width=132, tag='lock'):
+    """One detection crop as a small PPM thumbnail, for the picture boxes in
+    the lock panel.
+
+    Same writer the comparison frames use, so these need no Tk::JPEG and no
+    Pillow either. The thumbnails go in a folder beside the crop with the
+    width in the name, which means resizing the window rebuilds them rather
+    than scaling a thumbnail twice.
+    """
+    if not source or not os.path.exists(source):
+        return {'path': '', 'width': 0, 'height': 0}
+    folder = os.path.join(os.path.dirname(source), 'thumbs')
+    target = os.path.join(
+        folder, f'{tag}-{int(width)}-'
+                f'{os.path.splitext(os.path.basename(source))[0]}.ppm')
+    made, height = _write_thumb(source, target, int(width))
+    return {'path': target if made else '', 'width': made, 'height': height}
+
+
+def lock_report(width=132, count=20):
+    """The lock panel's own data, for the window that cannot import python.
+
+    Returns the newest detection crops with a thumbnail each, and what is
+    locked at the moment. Kept here rather than in webcam_lock.py because
+    this is the module that already knows how to write a PPM the Tk windows
+    can read.
+    """
+    try:
+        import webcam_lock
+    except ImportError:
+        return {'crops': [], 'locked': None,
+                'note': 'webcam_lock.py is not beside this helper'}
+    crops = []
+    try:
+        for item in webcam_lock.recent_crops(count):
+            thumb = crop_thumb(item['path'], width)
+            crops.append({'path': item['path'], 'label': item['label'],
+                          'stamp': item['stamp'],
+                          'is_locked': item['is_locked'],
+                          'thumb': thumb['path'], 'width': thumb['width'],
+                          'height': thumb['height']})
+    except Exception as problem:                              # noqa: BLE001
+        return {'crops': [], 'locked': None,
+                'note': f'could not read the detection crops: {problem}'}
+    data = webcam_lock.read_lock()
+    current = None
+    if data:
+        thumb = crop_thumb(data['path'], max(width, 160), tag='current')
+        current = {'label': data.get('label', 'object'),
+                   'source': data.get('source', ''),
+                   'thumb': thumb['path'], 'width': thumb['width'],
+                   'height': thumb['height']}
+    return {'crops': crops, 'locked': current,
+            'note': webcam_lock.describe()}
+
+
 def original_thumb(width=900, folder=None):
     """The untouched frame on its own, bigger, for the window that shows
     nothing but it.
@@ -371,6 +427,30 @@ def plain(report):
 def main():
     args = sys.argv[1:]
     width = 760
+    # The lock panel asks for this on its own, several times a minute, and it
+    # must not pay for the TensorFlow import the library checks do. So it is
+    # answered first and returns before any of that runs.
+    if '--lock-lines' in args:
+        thumb_width = 132
+        if '--thumb-width' in args:
+            try:
+                thumb_width = int(args[args.index('--thumb-width') + 1])
+            except (IndexError, ValueError):
+                pass
+        report = lock_report(thumb_width)
+        current = report.get('locked')
+        if current:
+            print('LOCKED|{}|{}|{}|{}|{}'.format(
+                current['label'], current['source'].replace('|', '/'),
+                current['thumb'], current['width'], current['height']))
+        for item in report['crops']:
+            print('LOCK|{}|{}|{}|{}|{}|{}|{}'.format(
+                item['path'].replace('|', '/'), item['label'],
+                item['stamp'], 1 if item['is_locked'] else 0,
+                item['thumb'], item['width'], item['height']))
+        for line in (report['note'] or '').splitlines():
+            print(f'NOTE|{line}')
+        return
     if '--thumb-width' in args:
         try:
             width = int(args[args.index('--thumb-width') + 1])
