@@ -90,7 +90,11 @@ that provides it, and install it with your say-so, streaming the install as it
 runs.
 
 What they check for: `python3-tk`, `v4l-utils`, `ffmpeg`, ImageMagick, numpy,
-OpenCV, TensorFlow and astral.
+OpenCV, TensorFlow and astral. `ffmpeg` is the one recording cannot do
+without, so a start on a machine that has no ffmpeg offers to install it
+there and then rather than printing a command to paste. It comes from apt,
+not pip - the thing on PyPI called `ffmpeg` is an unrelated wrapper, not the
+encoder.
 
 ```
 git clone https://github.com/CodeProSpecialist/Webcam-Light-Adjuster-in-Python-3.git

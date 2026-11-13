@@ -95,36 +95,54 @@ def ensure(*modules):
         p for p in APT_FOR_PROGRAM if not shutil.which(p)
     )
 
-    if not missing:
-        # Nothing to install, so nothing is run and nothing is asked. The
-        # programs below are a different matter: absent, the schedule still
-        # works and only the light correction does not, so this is said once
-        # and the program carries on.
-        if missing_programs:
-            it = 'it' if len(missing_programs) == 1 else 'them'
-            command = _apt_command(
-                APT_FOR_PROGRAM[p] for p in missing_programs
-            )
-            print(
-                'webcam: not installed: {names} - the schedule runs without '
-                '{it}, the automatic light adjustment does not. To add '
-                '{it}: {command}'.format(
-                    names=' '.join(missing_programs),
-                    it=it,
-                    command=' '.join(command),
-                ),
-                file=sys.stderr,
-            )
+    if not missing and not missing_programs:
+        return
+
+    # A missing program is installed here too, not merely reported. ffmpeg is
+    # the one that matters: without it there is no recording at all, so a
+    # first run on a clean machine should fix that itself rather than hand
+    # back an apt command to paste. On a terminal it offers to install,
+    # exactly as it does for a Python module. Headless, with every module
+    # present, it keeps the old behaviour and warns rather than exiting: a
+    # cron job that still does something useful beats one that dies.
+    if not missing and not _interactive():
+        it = 'it' if len(missing_programs) == 1 else 'them'
+        command = _apt_command(
+            APT_FOR_PROGRAM[p] for p in missing_programs
+        )
+        why = ' and '.join(
+            reason for program, reason in (
+                ('ffmpeg', 'there is no recording without ffmpeg'),
+                ('v4l2-ctl', 'the automatic light adjustment needs v4l2-ctl'),
+            ) if program in missing_programs
+        )
+        print(
+            'webcam: not installed: {names} - {why}. To add '
+            '{it}: {command}'.format(
+                names=' '.join(missing_programs),
+                why=why,
+                it=it,
+                command=' '.join(command),
+            ),
+            file=sys.stderr,
+        )
         return
 
     packages = [APT_FOR[m] for m in missing if m in APT_FOR]
+    packages += [APT_FOR_PROGRAM[p] for p in missing_programs]
     unknown = [m for m in missing if m not in APT_FOR]
 
     print()
-    print('webcam: these Python modules are needed and not installed:')
-    for module in missing:
-        print('  {0}'.format(module))
-    print()
+    if missing:
+        print('webcam: these Python modules are needed and not installed:')
+        for module in missing:
+            print('  {0}'.format(module))
+        print()
+    if missing_programs:
+        print('webcam: these programs are needed and not installed:')
+        for program in missing_programs:
+            print('  {0}'.format(program))
+        print()
 
     if unknown:
         print('No apt package is known here for: {0}'.format(
@@ -190,10 +208,12 @@ def ensure(*modules):
     # picture.
     importlib.invalidate_caches()
     still_missing = [m for m in missing if _missing(m)]
+    still_missing += [p for p in missing_programs
+                      if not shutil.which(p)]
 
     if still_missing:
         print()
-        print('apt finished, but these still will not import:')
+        print('apt finished, but these still are not there:')
         for module in still_missing:
             print('  {0}'.format(module))
         print()
