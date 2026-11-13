@@ -570,8 +570,28 @@ class LightMeter:
         return value
 
     def apply_trim(self, trim):
-        """Send the given trim, worked out from the preset's own baseline."""
+        """Send the given trim, worked out from the preset's own baseline.
+
+        Returns the number of controls actually written. That return value
+        matters: without a baseline there is nothing to trim *from*, every
+        control is skipped, and this used to go round the loop writing
+        nothing and still report "trimmed to +5". The picture stayed exactly
+        as dark as it was while the log said it was being corrected, which is
+        the worst kind of failure here - a silent one that reads as success.
+
+        The baseline is normally learnt on the first pass. It can be missing
+        when the camera could not be read at all: unplugged, or v4l2-ctl not
+        installed. So try once more to learn it here, and if there is still
+        nothing, say so rather than pretending.
+        """
         self.trim = max(-TRIM_MAX, min(TRIM_MAX, trim))
+        if not self.base:
+            if not self.ranges:
+                self.learn_ranges()
+            self.base = dict(self.read_controls())
+            if self.base:
+                log('learnt the baseline late, from the camera, because the '
+                    'first pass could not read it', always=True)
         self.wrote = {}
         for ctrl, fraction in TRIM_RULE.items():
             if ctrl not in self.base or ctrl not in self.ranges:
@@ -587,9 +607,18 @@ class LightMeter:
         # self.wrote: that is how an outside change is spotted, and sharpness
         # is a value this loop owns outright rather than a trim away from the
         # preset's own.
+        if not self.wrote:
+            # Nothing reached the camera. Loud, because the alternative is a
+            # log full of corrections that never happened.
+            log('TRIM NOT APPLIED: no control could be written - the camera '
+                'could not be read, so there is no baseline to trim from. '
+                'Check that the camera is plugged in and v4l2-ctl works.',
+                always=True)
+            return 0
         self.set_sharpness(self.wrote.get('gain'))
         # The light just moved, so give the autofocus a fresh start on it.
         self.refocus()
+        return len(self.wrote)
 
     # ---- the picture ----
 
@@ -1002,12 +1031,20 @@ class LightMeter:
             if at_limit:
                 why += ' - trim at its limit, the preset itself needs changing'
             else:
-                self.apply_trim(self.trim + direction)
+                sent = self.apply_trim(self.trim + direction)
                 self.hold = METER_SETTLE
                 self.means = []
-                why += f' - trimmed to {self.trim:+d}'
-                log(f'trim {self.trim:+d}: mean {middle:.0f} of target {self.target}, '
-                    f'white {hot * 100:.1f}%, black {cold * 100:.0f}% ({why})', always=True)
+                if sent:
+                    why += f' - trimmed to {self.trim:+d}'
+                    log(f'trim {self.trim:+d}: mean {middle:.0f} of target '
+                        f'{self.target}, white {hot * 100:.1f}%, black '
+                        f'{cold * 100:.0f}% ({why})', always=True)
+                else:
+                    # Say it here too. The status line is what is on the
+                    # screen, and it should never claim a correction that
+                    # did not reach the camera.
+                    why += (' - COULD NOT TRIM: nothing could be written to '
+                            'the camera')
         self.last_dir = direction
 
         return (f'light meter: trim {self.trim:+d}, mean {middle:.0f} of target '

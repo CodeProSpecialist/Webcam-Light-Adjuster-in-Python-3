@@ -963,6 +963,43 @@ python3 webcam_led.py --status
 Nothing in that output means nothing to be done - and that is the answer for
 most webcams, this one included if it has no `led1_mode` line.
 
+## The camera is adjusted live, and it says so only when it did
+
+The correction is not only applied to the saved copies. The light meter
+measures the picture every 10 seconds and **changes the camera's own settings
+in real time** when the picture needs it - gain, brightness, contrast,
+saturation and backlight compensation, each a step at a time away from
+whatever the preset set, with sharpness following the gain and the autofocus
+restarted after the light moves.
+
+Two samples have to agree before anything moves, and there is a dead band
+around the target, so it corrects rather than hunts. A scene that holds more
+range than the sensor can take - a security light over black tarmac - stops
+it rather than sending it off to one end of the trim chasing an impossible
+picture, and it says that is why.
+
+Measured on a camera whose picture responds to its controls: a night frame
+at mean 15 of 255, with 23% of it crushed to black, came up to mean 51 and 0%
+crushed over five steps, with brightness taken from 6 to 21, contrast from 50
+to 65 and backlight compensation from 0 to 8. No frame was captured for any
+of it - the stills the recorder was already writing were the measurements.
+
+### It no longer claims a correction it did not make
+
+The trim is worked out as a step away from the preset's own values, so it
+needs to have read those values first. When the camera could not be read at
+all - unplugged, or no `v4l2-ctl` - there was no baseline to trim from, every
+control was skipped, and the loop still reported `trimmed to +5`. Five times.
+The picture stayed exactly as dark as it was while the log said it was being
+corrected.
+
+A silent failure that reads as success is the worst kind here, and it is the
+same shape as the sunset bug above: something stopped working and nothing
+said so. Now the trim reports how many controls it actually wrote. Nothing
+written means the status line says `COULD NOT TRIM: nothing could be written
+to the camera`, the log says it loudly with what to check, and the baseline
+is re-read from the camera first in case that is all that was wrong.
+
 ## The sunset problem: night settings that turned the picture black
 
 The night preset put the black point on black. That is right at midnight and
