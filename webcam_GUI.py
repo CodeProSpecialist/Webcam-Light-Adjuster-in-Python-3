@@ -97,6 +97,13 @@ try:
 except ImportError:                                               # noqa: BLE001
     webcam_led = None
 
+# Reads the controls back and measures the picture, so the window can
+# answer whether anything it sends reaches the stream the recorder tapes.
+try:
+    import webcam_verify
+except ImportError:                                               # noqa: BLE001
+    webcam_verify = None
+
 # Every OpenCV, TensorFlow, detector and correction failure is written here by
 # whichever part of the pipeline hit it - including by the scheduler and by
 # cron runs that have no terminal of their own - and this window tails it into
@@ -723,6 +730,10 @@ class Window:
             row, text='LED on', font=('Helvetica', 8),
             command=lambda: self.on_led('on'))
         self.led_on_button.pack(side='left', padx=3)
+        # The other half of the question: not "is the LED off" but "is
+        # anything I do here reaching the stream the recorder is taping".
+        tk.Button(row, text='Is the camera listening?', font=('Helvetica', 8),
+                  command=self.on_check_camera).pack(side='right', padx=2)
         self.led_status = tk.Label(
             self.right, text='', anchor='w', justify='left',
             font=('Helvetica', 8), wraplength=310, fg='#333333')
@@ -1607,7 +1618,55 @@ class Window:
         finally:
             self.root.after(COMPARE_POLL_MS, self.poll_compare_frames)
 
-# ---- the untouched frame, in a window of its own ----
+    def on_check_camera(self):
+        """Does the camera take what this window sends, and is the picture it
+        is producing usable?
+
+        Worth asking separately, because the recorder - Xeoma, here - holds
+        the camera nearly all the time. Controls are per device rather than
+        per handle, so writes from outside the recorder do reach the stream it
+        is taping; what is not guaranteed is that they stay, and v4l2-ctl
+        reports success for a write the camera then ignores. So this reads
+        every control back and measures the newest still, and reports what the
+        camera says rather than what it was told.
+        """
+        if webcam_verify is None:
+            self.led_status.configure(text='webcam_verify.py is not here',
+                                      fg='#aa0000')
+            return
+        self.led_status.configure(text='asking the camera...', fg='#003366')
+        self.root.update()
+        try:
+            now = webcam_verify.read_controls(DEVICE)
+            path, _when = webcam_verify.newest_snapshot()
+            shot = webcam_verify.measure(path)
+            ok, why = webcam_verify.verdict(shot)
+        except Exception as problem:                           # noqa: BLE001
+            self.led_status.configure(
+                text=f'could not ask the camera: {problem}', fg='#aa0000')
+            return
+        if not now:
+            self.led_status.configure(
+                text='v4l2-ctl found no controls - the camera is not there, '
+                     'or v4l2-ctl is not installed', fg='#aa0000')
+            return
+        bits = [f'{len(now)} controls readable']
+        for name in ('brightness', 'contrast', 'gain'):
+            if name in now:
+                bits.append(f'{name}={now[name]}')
+        age = ''
+        if path:
+            try:
+                age = (f', newest still '
+                       f'{int(time.time() - os.path.getmtime(path))}s old')
+            except OSError:
+                age = ''
+        self.led_status.configure(text=f"{', '.join(bits)}{age} - {why}",
+                                  fg='#0a7a2a' if ok else '#aa0000')
+        if webcam_errors is not None:
+            webcam_errors.note('camera', f"checked: {', '.join(bits)} - {why}")
+
+    # ---- the untouched frame, in a window of its own ----
 
     def open_original_window(self):
         """A second window showing nothing but the frame as the camera gave

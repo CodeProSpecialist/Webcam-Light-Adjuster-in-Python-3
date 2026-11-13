@@ -963,6 +963,82 @@ python3 webcam_led.py --status
 Nothing in that output means nothing to be done - and that is the answer for
 most webcams, this one included if it has no `led1_mode` line.
 
+## The sunset problem: night settings that turned the picture black
+
+The night preset put the black point on black. That is right at midnight and
+wrong at sunset, and it was being applied at sunset + 14 minutes, when there
+is still light in the sky. Applied then it crushed the whole frame - and it
+stayed crushed, all night.
+
+What should have caught it is the light meter, which measures the picture and
+trims whatever the preset set. It did not, for a reason worth stating plainly:
+**the meter is blind whenever the recorder has the camera.** Xeoma holds the
+stream nearly all the time, this program samples the .jpg stills rather than
+the stream, and when no still is arriving the meter has nothing to measure. It
+was not failing. It was running with its eyes shut, and the preset's own
+numbers stood all night.
+
+![The same night frame as the preset leaves it, then after each round of
+walking back](docs/night-preset-walked-back.png)
+
+(One real night frame put through the control changes the walk-back makes -
+not three separate captures. The measurements under each panel are real
+measurements of the three resulting frames.)
+
+So the preset now checks its own work. After night is applied the newest still
+is measured, and if the picture has been destroyed the preset is walked back a
+step at a time - brightness up, contrast down, backlight compensation up -
+measuring after each round, stopping the moment the picture is usable. On a
+properly dark night it measures one frame and does nothing.
+
+What counts as destroyed:
+
+| | |
+|---|---|
+| crushed | more than 55% of the frame at or near black |
+| dark | mean below 28 of 255 |
+| blown | more than 4% at or near white |
+
+Walking back beats re-tuning the constants. The constants cannot be right for
+both sunset and midnight; this does not need them to be.
+
+And when no fresh still arrives after a change, it says so rather than
+reporting success - because that is the blindness that caused this in the
+first place, and it should never again be silent.
+
+## Is the camera listening while the recorder has it?
+
+**Is the camera listening?** in the window, next to the LED buttons. It reads
+every control back and measures the newest still.
+
+This is worth asking because of how the two programs share the camera.
+V4L2 controls belong to the device, not to whoever opened it, so writes from
+here do reach the stream Xeoma is recording - this program does not need to
+own the camera to change the picture. What is *not* guaranteed is that they
+stay: `v4l2-ctl` reports success for a write the camera then ignores, some
+firmware quietly reverts, and a recorder with its own exposure settings can
+put them back. The only honest answer comes from reading the control back
+afterwards and looking at the picture that came out.
+
+So the check reports what the camera says, never what it was told:
+
+```
+12 controls readable, brightness=22, contrast=38, newest still 7s old
+  - mean 41, 0% black, 0% white - usable
+```
+
+A stale "newest still" is itself the answer: if it is minutes old, the
+recorder has stopped writing stills, nothing is measuring the picture, and
+the night guard above has nothing to work from.
+
+From a terminal:
+
+```
+python3 webcam_verify.py --measure           # what is the picture doing
+python3 webcam_verify.py --readback night    # did the preset's values stick
+python3 webcam_verify.py --guard night       # measure, and walk back if crushed
+```
+
 ## Files
 
 | File | What it is |
@@ -993,3 +1069,4 @@ most webcams, this one included if it has no `led1_mode` line.
 | `~/Pictures/webcam/webcam-errors.log` | that log, rolled by size |
 | `~/Pictures/webcam/.../enhanced/compare/` | the six comparison frames the window shows |
 | `webcam_led.py` | turns the camera's LED off and on, where the camera allows it |
+| `webcam_verify.py` | reads the controls back, measures the picture, walks the night preset back when it crushes the frame |

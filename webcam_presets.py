@@ -374,6 +374,25 @@ def apply_preset(preset, device='/dev/video0'):
         got = cam.get_ctrl(cam.exp_ctrl)
         print(f'  {cam.exp_ctrl:<30} {got} '
               f'(chosen by the camera, aperture priority)')
+
+    # Night, checked. This preset puts the black point on black, which is
+    # right at midnight and wrong at sunset + 14 minutes when there is still
+    # light in the sky - applied then it can crush the whole frame. The light
+    # meter would normally pull that back, but it is blind whenever the
+    # recorder holds the camera and no snapshot is arriving, and blind it
+    # leaves the picture black all night. So the picture is measured here and
+    # the preset walked back if it has been destroyed. On a properly dark
+    # night this measures one frame and does nothing.
+    if preset in ('night', 'night_mono'):
+        try:
+            import webcam_verify                             # noqa: PLC0415
+        except ImportError:
+            pass
+        else:
+            try:
+                webcam_verify.guard(preset, device)
+            except Exception as problem:                      # noqa: BLE001
+                print(f'  could not check the night picture: {problem}')
     return True
 
 
