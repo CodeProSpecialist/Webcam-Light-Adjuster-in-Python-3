@@ -192,6 +192,32 @@ archive 41.2 of 250 GB (16% of the loop) in 8,642 segments   -   96.4 GB free
 on disk, floor 25 GB   -   oldest kept: 2026-11-07_04-15-00.mp4
 ```
 
+## Deleting an archive by hand
+
+The archive folder and `~/.cache/webcam` have to agree with each other.
+`~/.cache/webcam` holds the recorder's pid file, its status files and the
+preview frames, and those still name segments that the archive folder used to
+hold. Delete an archive yourself - in a file manager, or with `rm` - and the
+recorder carries on writing against state that no longer matches the disk,
+which shows up as a camera that simply will not record.
+
+**Open archive folder** therefore opens the folder and then says so in a
+window of its own:
+
+> If the archive file is deleted, then the files in `~/.cache/webcam` related
+> to that archive need to also be deleted and the program needs to be
+> restarted to begin recording onto a new archive.
+
+Under that notice is the repair:
+
+- **Delete Archive files to fix camera not recording errors** - stops
+  recording, empties `~/.cache/webcam`, and asks you to restart the program.
+  No recorded video is touched: everything it deletes is the pid file, the
+  status files and the preview frames, all of which are written again on the
+  next start. After the restart the recorder begins a new archive.
+
+It asks for confirmation first, and reports anything it could not delete.
+
 ## Several cameras
 
 Four slots, each a tick and a device picker. Four is the ceiling on purpose:
@@ -489,6 +515,7 @@ where a kill leaves the last segment with no moov atom and it will not play.
 | `~/.config/webcam/recorder.conf` | recorder settings |
 | `~/.config/webcam/archive.db` | the segment index |
 | `~/.cache/webcam/preview-cam1.jpg` | the frame each pane draws |
+| `~/.cache/webcam/` | recorder pid, status and preview files - safe to delete when the program is stopped |
 
 No user name is written into any of these: they resolve for whoever is running
 the program, which is what makes this work the same from a terminal, from cron
@@ -536,6 +563,11 @@ faster than real time. Ubuntu 24.04 and 26.04 both ship a new enough one.
 
 **A search finds nothing you can see on disk.** Press **Rescan disk** - the
 index has not caught up with what the recorder has written.
+
+**The camera will not record after an archive was deleted by hand.** The
+recorder's state in `~/.cache/webcam` still names segments that no longer
+exist. Press **Open archive folder**, then **Delete Archive files to fix
+camera not recording errors**, and restart the program.
 
 **The night correction is too dark.** Use the delete-and-retrain button in the
 settings page. The model is trained on your scene; if it learned the wrong

@@ -437,6 +437,13 @@ class LivePage(tk.Frame):
                 'loop cap and the free-space floor.'))
         threading.Thread(target=work, daemon=True).start()
 
+    # The archive folder and the state folder have to agree with each other.
+    # ~/.cache/webcam holds the recorder's pid, its status json and the
+    # preview frames, and those still name segments that the archive folder
+    # used to hold. Delete an archive by hand and the recorder keeps writing
+    # against state that no longer matches the disk, which shows up as a
+    # camera that will not record. So opening the folder also says so, and
+    # offers the one repair that fixes it.
     def on_open_folder(self):
         folder = webcam_record.read_settings()['archive_dir']
         try:
@@ -444,6 +451,87 @@ class LivePage(tk.Frame):
             subprocess.Popen(['xdg-open', folder])
         except OSError as problem:
             messagebox.showinfo('Archive folder', f'{folder}\n\n{problem}')
+        self.show_archive_notice(folder)
+
+    def show_archive_notice(self, folder):
+        """The notice window, with the repair button under it."""
+        window = tk.Toplevel(self)
+        window.title('Archive folder')
+        window.transient(self.winfo_toplevel())
+        frame = tk.Frame(window, padx=12, pady=12)
+        frame.pack(fill='both', expand=True)
+
+        tk.Label(frame, text=folder, font=('Helvetica', 9, 'bold'),
+                 anchor='w', justify='left').pack(fill='x')
+        tk.Label(
+            frame,
+            text='If the archive file is deleted, then the files in '
+                 '~/.cache/webcam related to that archive need to also be '
+                 'deleted and the program needs to be restarted to begin '
+                 'recording onto a new archive.',
+            wraplength=430, justify='left', anchor='w',
+            pady=8).pack(fill='x')
+
+        tk.Button(
+            frame,
+            text='Delete Archive files to fix camera not recording errors',
+            command=lambda: self.on_clear_state(window)).pack(fill='x', pady=4)
+        tk.Button(frame, text='Close', width=10,
+                  command=window.destroy).pack(pady=2)
+
+    def on_clear_state(self, window=None):
+        """Empty ~/.cache/webcam.
+
+        Nothing in there is recorded video - it is the pid file, the status
+        json and the preview jpgs, all of which the recorder writes again on
+        its next start. The recorder is stopped first so that it is not
+        holding a pid file that is about to disappear.
+        """
+        if not messagebox.askyesno(
+                'Delete archive state files',
+                f'Delete the recorder state files in '
+                f'{webcam_record.STATE_DIR}?\n\n'
+                'No recorded video is touched. Recording stops, and the '
+                'program needs restarting afterwards to begin a new '
+                'archive.'):
+            return
+
+        try:
+            self.app.recorder.stop()
+        except Exception:                    # already stopped is fine
+            pass
+
+        removed, failed = 0, []
+        state = webcam_record.STATE_DIR
+        try:
+            names = sorted(os.listdir(state))
+        except OSError as problem:
+            messagebox.showinfo('Delete archive state files',
+                                f'{state}\n\n{problem}')
+            return
+        for name in names:
+            path = os.path.join(state, name)
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    import shutil
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                removed += 1
+            except OSError as problem:
+                failed.append(f'{name}: {problem}')
+
+        self.state_text.config(text='state cleared - restart the program')
+        self.state_dot.config(bg='#555555')
+        if window is not None:
+            window.destroy()
+
+        note = (f'{removed} item(s) deleted from {state}.\n\n'
+                'Now close and restart the program to begin recording onto '
+                'a new archive.')
+        if failed:
+            note += '\n\nCould not delete:\n' + '\n'.join(failed)
+        messagebox.showinfo('Delete archive state files', note)
 
     def on_rescan_devices(self):
         self.known = webcam_record.list_devices()
