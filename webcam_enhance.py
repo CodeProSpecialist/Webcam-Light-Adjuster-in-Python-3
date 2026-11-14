@@ -268,6 +268,11 @@ def activate_brain(family):
     there is exactly one brain resident - the one for the preset that is on -
     and the memory the others held goes back.
 
+    DISCONNECTED, NOT DELETED. Nothing on disk is touched here: every other
+    brain stays trained and in its folder, and comes back the moment its own
+    preset does. The only thing that deletes a brain is the delete-and-retrain
+    button, and that one takes only the brain for the preset in force.
+
     Returns True when something was actually dropped.
     """
     stale = [key for key in _brain.cache if key != family]

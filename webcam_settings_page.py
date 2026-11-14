@@ -933,7 +933,9 @@ class Window:
         self.brain_reset_button.pack(side='left')
         tk.Label(row,
                  text='If image is corrected too dark or incorrectly, delete '
-                      'and retrain the machine learning model.',
+                      'and retrain the machine learning model. This takes only '
+                      'the brain for the preset that is on now; the other '
+                      'brains are left alone.',
                  font=('Helvetica', 8), anchor='w', justify='left',
                  wraplength=420).pack(side='left', padx=6)
 
@@ -1128,8 +1130,9 @@ class Window:
             return
 
         self.brain_reset_button.configure(state='disabled')
-        self.brain_status.configure(text='deleting the brain and training a '
-                                         'new one, this takes a minute...')
+        self.brain_status.configure(
+            text=f'deleting {self._brain_name()} and training a new one, '
+                 'this takes a minute...')
         self.brain_lines = queue.Queue()
 
         def work():
@@ -1144,6 +1147,21 @@ class Window:
         self.brain_worker = threading.Thread(target=work, daemon=True)
         self.brain_worker.start()
         self.root.after(400, self.drain_brain_worker)
+
+    def _brain_name(self):
+        """The brain the button will take: the one for the preset that is on.
+
+        Named rather than described, because the button deletes exactly this
+        one and leaves the other four alone, and the status line is the only
+        place that says so while it is running.
+        """
+        if not webcam_enhance:
+            return 'the brain'
+        try:
+            family = webcam_enhance.active_family()
+        except Exception:                                     # noqa: BLE001
+            family = None
+        return f'brain {family}' if family else 'brain G'
 
     def drain_brain_worker(self):
         """Show what the worker has said, and tidy up when it has finished."""

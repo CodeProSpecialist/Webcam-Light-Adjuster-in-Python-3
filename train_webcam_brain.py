@@ -1523,7 +1523,7 @@ def delete_brain(folder):
     return (True, f'deleted {", ".join(gone)} from {folder}')
 
 
-def reset_and_retrain(quiet=False, report=None, preset=None):
+def reset_and_retrain(quiet=False, report=None, preset=None, every=False):
     """Throw the current brain away and train a fresh one from the harvest.
 
     This is the button in the window, and it exists because a trained model can
@@ -1541,6 +1541,13 @@ def reset_and_retrain(quiet=False, report=None, preset=None):
     the analytic correct doing the work until there is. That is a real state
     and not a failure: the correction still runs, one tier down.
 
+    ONE BRAIN, the one for the preset in force. The button is pressed because
+    the picture on the screen right now looks wrong, and the brain that
+    produced it is the brain for the light that is on - the other four had
+    nothing to do with it and are left alone, trained and intact. Pass
+    every=True to delete all of them, which is the only way to get the old
+    behaviour and is not what the button does.
+
     Returns (trained, line).
     """
     def say(text):
@@ -1556,10 +1563,15 @@ def reset_and_retrain(quiet=False, report=None, preset=None):
     # correction working if there turns out not to be enough harvested to
     # train on. self_train_if_ready retires it in the usual way once the new
     # brain is shown to be better.
-    # Which brains to throw away: the one for the named preset, or all five
-    # when nothing is named, which is what the button in the window does.
-    families = ([brain_family(preset)] if preset is not None
-                else list(BRAIN_FAMILIES) + [None])
+    # Which brains to throw away. The default is the one brain that is active
+    # - the one that produced the picture the user is unhappy with. every=True
+    # is the explicit "all of them", including the old all-day folder.
+    if every:
+        families = list(BRAIN_FAMILIES) + [None]
+    elif preset is not None:
+        families = [brain_family(preset)]
+    else:
+        families = [active_brain()[0]]
     notes = []
     for family in families:
         done, note = delete_brain(brain_dir_for(family))
@@ -1579,12 +1591,14 @@ def reset_and_retrain(quiet=False, report=None, preset=None):
     index['last_trained_by_brain'] = stamps
     write_index(index)
 
-    retrain_for = brain_family(preset) if preset is not None else None
+    retrain_for = None if every else families[0]
     state = corpus_state(retrain_for)
     ready, why = ready_to_train(state, family=retrain_for)
     if not ready:
         shipped = os.path.isfile(os.path.join(SHIPPED_DIR, 'model.keras'))
-        line = ('brain G: deleted. Not enough harvested to train a new one yet '
+        deleted = (f'brain {retrain_for}' if retrain_for and not every
+                   else 'the brains')
+        line = (f'{deleted}: deleted. Not enough harvested to train a new one yet '
                 f'- {why}. '
                 + ('The shipped brain is doing the correcting in the meantime.'
                    if shipped else
@@ -1594,8 +1608,9 @@ def reset_and_retrain(quiet=False, report=None, preset=None):
         say(line)
         return (False, line)
 
-    if preset is not None:
-        say(f'brain {retrain_for}: training a fresh brain on this camera...')
+    if not every:
+        label = f'brain {retrain_for}' if retrain_for else 'brain G'
+        say(f'{label}: training a fresh brain on this camera...')
         did, line = self_train_if_ready(force=True, quiet=quiet,
                                         preset=retrain_for)
     else:
@@ -1769,8 +1784,10 @@ def main():
     parser.add_argument('--corpus-state', action='store_true',
                         help='what has been harvested so far')
     parser.add_argument('--reset-retrain', action='store_true',
-                        help='delete the current brain and train a new one '
-                             'from the harvest')
+                        help="delete the brain for the preset in force (or "
+                             'the one named by --preset) and train a new one '
+                             'from the harvest. The other brains are left '
+                             'alone; add --all-presets to delete every one')
     args = parser.parse_args()
 
     if args.corpus_state:
@@ -1802,7 +1819,8 @@ def main():
         return 0
 
     if args.reset_retrain:
-        did, line = reset_and_retrain(quiet=args.quiet, preset=args.preset)
+        did, line = reset_and_retrain(quiet=args.quiet, preset=args.preset,
+                                      every=args.all_presets)
         if args.quiet:
             print(line)
         return 0 if did else 1

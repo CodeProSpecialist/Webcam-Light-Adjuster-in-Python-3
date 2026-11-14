@@ -540,6 +540,11 @@ is applied and read on every frame, so a preset change takes effect
 immediately. The brain tile names the brain in use, the preset in force and
 which brains have been dropped.
 
+Disconnected is not deleted. Nothing on disk is touched by a switch: every
+other brain stays trained in its own folder and comes back the moment its
+preset does. The only thing that deletes a brain is the delete-and-retrain
+button, below.
+
 **A preset with no brain of its own** - `cloudy`, `defaults`, anything added
 later - gets the analytic lift, not the old all-day brain. That brain was
 trained across mixed light, and running it on light nobody trained for is the
@@ -570,11 +575,34 @@ python3 train_webcam_brain.py --corpus-state
 ```
 
 The light meter retrains the brain for the preset in force, so each brain is
-retrained while its own light is what the camera is seeing. The
-delete-and-retrain button deletes all five and trains every family that has
-enough harvested; `--reset-retrain --preset day` does one of them. The brain
-that shipped with the repository is kept until all five families have a brain
-of their own, so nothing is thrown away while something still depends on it.
+retrained while its own light is what the camera is seeing.
+
+### The delete-and-retrain button takes one brain
+
+*"If image is corrected too dark or incorrectly, delete and retrain the machine
+learning model."* That button deletes **only the brain for the preset that is on
+right now** and trains a fresh one from that preset's harvested frames. The
+other four are left alone, trained and intact.
+
+That is the right scope: the button is pressed because the picture on the screen
+looks wrong, and the brain that produced it is the brain for the light that is
+on. The other four had nothing to do with it, and each one represents its own
+share of the harvest.
+
+```
+# the brain for the preset in force - what the button does
+python3 train_webcam_brain.py --reset-retrain
+
+# a named brain, whatever the camera is doing
+python3 train_webcam_brain.py --reset-retrain --preset golden_pm
+
+# all five, and the old all-day folder with them
+python3 train_webcam_brain.py --reset-retrain --all-presets
+```
+
+The brain that shipped with the repository is kept until all five families have
+a brain of their own, so nothing is thrown away while something still depends
+on it.
 
 ## Finding cars and people
 
