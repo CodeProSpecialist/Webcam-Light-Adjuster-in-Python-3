@@ -1720,13 +1720,19 @@ class Window:
 
         # One row per library, filled in by the worker below.
         self.lib_rows = {}
+        self.lib_titles = {}
         grid = tk.Frame(frame)
         grid.pack(fill='x', padx=6, pady=(2, 4))
+        # The last row is the brain, and which brain that is changes with the
+        # preset - so its caption is written by the check rather than fixed
+        # here. It starts as the word 'brain' and becomes the live one's name
+        # the moment the check comes back.
         for index, name in enumerate(('OpenCV', 'TensorFlow',
-                                      'Object detector', 'Brain G')):
-            tk.Label(grid, text=f'{name}:', anchor='w', width=16,
-                     font=('Helvetica', 8, 'bold')).grid(row=index, column=0,
-                                                         sticky='w')
+                                      'Object detector', 'brain')):
+            title = tk.Label(grid, text=f'{name}:', anchor='w', width=16,
+                             font=('Helvetica', 8, 'bold'))
+            title.grid(row=index, column=0, sticky='w')
+            self.lib_titles[name] = title
             state = tk.Label(grid, text='checking...', anchor='w', width=12,
                              font=('Monospace', 8), fg='#666666')
             state.grid(row=index, column=1, sticky='w')
@@ -2130,7 +2136,16 @@ class Window:
         for row in rows:
             widgets = self.lib_rows.get(row['name'])
             if not widgets:
-                continue
+                # The brain's row is the one whose caption is not fixed: the
+                # check names the brain that is live, which is a different
+                # name under every preset, so it lands here and takes the
+                # row kept for it.
+                widgets = self.lib_rows.get('brain')
+                if not widgets:
+                    continue
+                title = self.lib_titles.get('brain')
+                if title:
+                    title.configure(text=f"{row['name']}:")
             state, detail = widgets
             if row['ok']:
                 working += 1

@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 COMPARE_DIR_NAME = 'compare'
 STAGES = [
     ('raw.ppm', 'before - as the camera gave it'),
-    ('corrected.ppm', 'after - stacked, CLAHE, brain G'),
+    ('corrected.ppm', 'after - stacked, CLAHE, the active brain'),
     ('boost-before.ppm', 'before - the corrected frame'),
     ('boost-after.ppm', 'after - car/person found, boxed and lifted'),
     ('crop-before.ppm', 'before - the car or person, close up'),

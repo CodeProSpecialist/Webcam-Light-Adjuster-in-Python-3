@@ -145,8 +145,27 @@ def style_ttk(root):
               background=[('active', BUTTON_ON), ('pressed', BUTTON_ON)])
     style.configure('TCheckbutton', background=BG, foreground=TEXT)
     style.configure('TEntry', fieldbackground=ENTRY, foreground=TEXT)
+    # A combobox is three things that take colour separately: the field, the
+    # arrow button beside it, and the list that drops down - and the list is
+    # a plain Tk listbox living in its own toplevel, so it is reached through
+    # the option database rather than the style.
     style.configure('TCombobox', fieldbackground=ENTRY, foreground=TEXT,
-                    background=BUTTON)
+                    background=BUTTON, arrowcolor=DIM, bordercolor=EDGE,
+                    selectbackground=SELECT, selectforeground=TEXT)
+    style.map('TCombobox',
+              fieldbackground=[('readonly', ENTRY), ('disabled', BG)],
+              foreground=[('readonly', TEXT), ('disabled', DIM)],
+              selectbackground=[('readonly', SELECT)],
+              selectforeground=[('readonly', TEXT)],
+              background=[('active', BUTTON_ON)])
+    for name, value in (('*TCombobox*Listbox.background', ENTRY),
+                        ('*TCombobox*Listbox.foreground', TEXT),
+                        ('*TCombobox*Listbox.selectBackground', SELECT),
+                        ('*TCombobox*Listbox.selectForeground', TEXT)):
+        try:
+            root.option_add(name, value)
+        except tk.TclError:
+            pass
     style.configure('TNotebook', background=BG, bordercolor=EDGE,
                     tabmargins=(2, 4, 2, 0))
     style.configure('TNotebook.Tab', background=PANEL, foreground=DIM,
@@ -156,6 +175,17 @@ def style_ttk(root):
     style.map('TNotebook.Tab',
               background=[('selected', BG), ('active', BUTTON_ON)],
               foreground=[('selected', TEXT), ('active', TEXT)])
+    # The segment list. A Treeview paints its rows from its own options
+    # rather than from the page, so without this the archive's list comes out
+    # as a white slab in the middle of a dark window.
+    style.configure('Treeview', background=PANEL, fieldbackground=PANEL,
+                    foreground=TEXT, bordercolor=EDGE, rowheight=20)
+    style.map('Treeview',
+              background=[('selected', SELECT)],
+              foreground=[('selected', TEXT)])
+    style.configure('Treeview.Heading', background=BUTTON, foreground=DIM,
+                    bordercolor=EDGE, relief='flat')
+    style.map('Treeview.Heading', background=[('active', BUTTON_ON)])
     style.configure('Vertical.TScrollbar', background=BUTTON,
                     troughcolor=TROUGH, bordercolor=EDGE,
                     arrowcolor=DIM)
@@ -201,8 +231,13 @@ def recolour(widget, skip_classes=()):
                 _set(widget, bg=ENTRY)
             else:
                 _set(widget, bg=BG)
+        # The text, read against whatever background this widget ended up
+        # with - which is not always the page: a preset button keeps its own
+        # pastel and a legend swatch keeps its green, and on those the text
+        # has to go dark rather than light.
         _set(widget, fg=_readable(_cget(widget, 'fg'),
-                                  ACCENT if name == 'LabelFrame' else TEXT))
+                                  ACCENT if name == 'LabelFrame' else TEXT,
+                                  _cget(widget, 'bg') or BG))
         if name in ('Checkbutton', 'Radiobutton'):
             _set(widget, selectcolor=ENTRY, activebackground=BG)
     elif name == 'Scale':
@@ -224,7 +259,29 @@ def _cget(widget, option):
         return ''
 
 
-def _readable(colour, default):
+INK = '#10171e'          # text for anything that kept a light background
+
+
+def _luminance(parts):
+    """Relative luminance, the way the contrast guidelines define it."""
+    out = []
+    for value in parts:
+        channel = value / 255.0
+        out.append(channel / 12.92 if channel <= 0.03928
+                   else ((channel + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def _contrast(first, second):
+    """How far apart two colours are to read, 1.0 (invisible) to 21.0."""
+    one, two = _rgb(first), _rgb(second)
+    if one is None or two is None:
+        return None
+    light, dark = sorted((_luminance(one), _luminance(two)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def _readable(colour, default, background=BG):
     """A foreground that can actually be read on this background.
 
     The pages were written for a light background, so their text colours are
@@ -239,20 +296,45 @@ def _readable(colour, default):
     to read. Anything already light is left exactly as it was, which is how
     the green on the active brain and the red on a failed library survive.
     """
+    # A widget that kept a background of its own - a preset button, a legend
+    # swatch, the red record button - is not sitting on the page's colour, so
+    # the page's text colour is not the one to use. Take whichever of dark
+    # ink and plain white reads better on it, which is dark on a pastel and
+    # white on a strong red.
+    back = _rgb(background)
+    if back is not None and _luminance(back) > 0.12:
+        on_ink = _contrast(INK, background) or 0
+        on_white = _contrast('#ffffff', background) or 0
+        return INK if on_ink >= on_white else '#ffffff'
+
     parts = _rgb(colour)
     if parts is None:
         return default
     red, green, blue = parts
-    if max(parts) >= 150:
-        return colour                       # already light enough to read
+    # Readable where it stands is the test, not how light the ink is: a dark
+    # red passes "light enough" on its own and still disappears on near black.
+    here = _contrast(colour, background)
+    if here is not None and here >= 4.5:
+        return colour
     if max(parts) - min(parts) <= 18:
         # A grey ink. The darker it was, the more ordinary it was meant to
         # look, which on this background means the plain text colour.
         return default if max(parts) <= 90 else DIM
+    # Brighten the ink at its own hue until it is comfortably readable where
+    # it stands. A single scaling is not enough for a deep blue or a deep
+    # red: those are dark in the channels that carry most of the apparent
+    # light, so they come out only just legible. Blending the rest of the way
+    # toward white keeps the hue recognisable - a red warning still reads as
+    # red - and buys the contrast.
     scale = 225.0 / max(1, max(parts))
-    return '#%02x%02x%02x' % (min(255, int(red * scale)),
-                              min(255, int(green * scale)),
-                              min(255, int(blue * scale)))
+    lifted = [min(255.0, value * scale) for value in (red, green, blue)]
+    for _ in range(12):
+        colour_now = '#%02x%02x%02x' % tuple(int(v) for v in lifted)
+        ratio = _contrast(colour_now, background)
+        if ratio is None or ratio >= 4.5:
+            return colour_now
+        lifted = [value + (255.0 - value) * 0.18 for value in lifted]
+    return '#%02x%02x%02x' % tuple(int(v) for v in lifted)
 
 
 def _rgb(colour):
