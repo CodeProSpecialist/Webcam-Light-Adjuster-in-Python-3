@@ -178,6 +178,49 @@ RETRAIN_EVERY = 24 * 3600
 # sun frame is clipped in the highlights and deep in the shadows where the
 # overcast one is neither - so bright_sun gets a brain of its own.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The night camera settings, frozen into the night brain's foundation.
+#
+# These are the settings the night preset actually applies - the ones measured
+# on the camera, in the legacy 0-255 scale webcam_presets.py keeps them in.
+# They are here, and not only there, because they decide what a night frame
+# LOOKS like before the brain ever sees it, and the brain has to be pretrained
+# against that look rather than against a generic dark frame:
+#
+#   gain 255        the sensor is wide open, so the grain is as bad as this
+#                   camera gets. A night frame is noise-limited, not
+#                   exposure-limited, which is why the night brain denoises
+#                   hardest and why its lift is held back on grain.
+#   brightness 193  a black-level lift, not exposure. The floor does not sit
+#                   on black: it sits three quarters of the way up, so a
+#                   night frame arrives veiled rather than crushed, and the
+#                   brain must learn to correct a frame with a raised floor.
+#   contrast 32     low, so that raised floor is not stretched into fog.
+#   saturation 32   little colour, which is the chroma noise kept down -
+#                   colour is kept around the clock, just less of it at night.
+#   sharpness 250   the camera is already sharpening hard, so the grain
+#                   arrives crisped. The brain's own unsharp pass sits on top
+#                   of that and not instead of it.
+#
+# Frozen means frozen: the night brain is pretrained against these and the
+# values are written into its meta.json, so a brain on disk always says which
+# night camera settings it was built for. Change the night preset and the
+# night brain has to be deleted and retrained - the retrain button does that.
+NIGHT_CAMERA = {
+    'sharpness': 250, 'brightness': 193, 'contrast': 32,
+    'saturation': 32, 'gain': 255, 'scale': 255,
+}
+
+# What those settings do to a simulated night frame, as fractions of the
+# 0-1 working range: the black floor they lift it to, how much of the
+# contrast range is left, and how hard the grain and the sharpening come in.
+NIGHT_SIGNATURE = {
+    'floor': NIGHT_CAMERA['brightness'] / NIGHT_CAMERA['scale'] * 0.22,
+    'contrast': 0.55 + 0.45 * (NIGHT_CAMERA['contrast'] / 64.0),
+    'grain': NIGHT_CAMERA['gain'] / NIGHT_CAMERA['scale'],
+    'crisp': NIGHT_CAMERA['sharpness'] / NIGHT_CAMERA['scale'],
+}
+
 BRAIN_PRESETS = {
     'night': ('night', 'night_mono'),
     'golden_am': ('golden_am',),
@@ -1086,7 +1129,7 @@ def simulate_input(clear, rng, family=None):
     mandate = brain_mandate(family)
     if float(mandate['gain_max']) <= 1.0:
         return overexpose(clear, rng, mandate)
-    return degrade(clear, rng, mandate)
+    return degrade(clear, rng, mandate, family=family)
 
 
 def as_the_brain_sees_it(frame):
@@ -1157,7 +1200,7 @@ def simulated_pair(clear, rng, family=None, aim=0.45):
 
     mandate = brain_mandate(family)
     if float(mandate['gain_max']) > 1.0:
-        dark, frames = degrade(clear, rng, mandate)
+        dark, frames = degrade(clear, rng, mandate, family=family)
         return dark, clear, frames
 
     blown, frames = overexpose(clear, rng, mandate)
@@ -1168,7 +1211,7 @@ def simulated_pair(clear, rng, family=None, aim=0.45):
     return blown, wanted, frames
 
 
-def degrade(clear, rng, mandate=None):
+def degrade(clear, rng, mandate=None, family=None):
     """One dark noisy frame from one clear frame, plus the stack count used.
 
     The stack count matters: at run time the brain is fed the average of
@@ -1215,6 +1258,27 @@ def degrade(clear, rng, mandate=None):
         noisy = shot + rng.normal(0, read_sigma, dark.shape)
         stack += np.clip(noisy, 0, 1)
     dark = (stack / frames).astype(np.float32)
+
+    # The night camera's own signature, for the night brain only.
+    #
+    # Everything above makes a dark noisy frame in general. These four lines
+    # make it the frame THIS camera produces at night with the settings the
+    # night preset applies: grain scaled by how wide open the sensor is,
+    # sharpening applied the way the camera applies it so the grain arrives
+    # crisped, the contrast squeezed the way contrast 32 squeezes it, and the
+    # black floor lifted the way brightness 193 lifts it. A night brain
+    # pretrained without these learns to correct a frame that never arrives.
+    if family == 'night':
+        sig = NIGHT_SIGNATURE
+        extra = float(rng.uniform(0.0, 0.035)) * sig['grain']
+        dark = np.clip(dark + rng.normal(0, extra, dark.shape), 0, 1)
+        if sig['crisp'] > 0.05:
+            soft = cv2.GaussianBlur(dark, (0, 0), 1.1)
+            amount = 0.8 * sig['crisp'] * float(rng.uniform(0.6, 1.0))
+            dark = np.clip(dark + amount * (dark - soft), 0, 1)
+        dark = np.clip(0.5 + (dark - 0.5) * sig['contrast'], 0, 1)
+        floor = sig['floor'] * float(rng.uniform(0.7, 1.0))
+        dark = np.clip(floor + dark * (1.0 - floor), 0, 1).astype(np.float32)
 
     # JPEG, because the stills are JPEGs and its blocking is part of what the
     # brain has to see through.
@@ -1777,6 +1841,10 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         'feature_count': BRAIN_G_FEATURES,
         'foundation_units': unit_names(),
         'foundation_frozen': True,
+        # The night camera settings this brain was pretrained against, frozen
+        # with it. A night brain built for other settings is the wrong brain
+        # and should be deleted and retrained.
+        'night_camera': (dict(NIGHT_CAMERA) if family == 'night' else None),
         'architecture': '12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2',
         # Both outputs are 0 to 1 across this brain's own range, so where
         # "no change" sits depends on the range: 0.5 exactly when the
@@ -1905,6 +1973,14 @@ def _brain_synth_generate(family, n_samples, seed=0):
         glare = float(np.clip(max(luma, hi * rng.uniform(0.5, 1.0)), 0, 1))
         colour = float(np.clip(rng.uniform(0.0, 0.9) * (0.4 + scene), 0, 1))
         black = float(max(0.0, 1.0 - luma / 0.06))
+        if family == 'night':
+            # brightness 193 means a night frame has no true blacks in it:
+            # the floor is lifted, so the near-black detector should almost
+            # never fire, and a pixel that looks black is veiled rather than
+            # empty. Teaching the night brain otherwise is teaching it to
+            # hold back the lift on exactly the pixels that need it.
+            black *= 1.0 - NIGHT_SIGNATURE['floor'] * 3.0
+            black = float(max(0.0, black))
 
         X[i] = [luma, m_small, m_mid, m_large, detail, s_small, s_large,
                 g_mean, hi, glare, colour, black]

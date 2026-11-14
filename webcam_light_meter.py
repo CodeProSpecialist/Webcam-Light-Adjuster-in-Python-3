@@ -168,6 +168,18 @@ TRIM_RULE = {
 LOCKED_CONTROLS = ('saturation', 'hue')
 GAMMA_CTRL = 'gamma'
 
+# Night gamma is the camera's factory default and nothing else.
+#
+# Gamma is left at the factory default on purpose, day and night. Moved either
+# way it turns a night frame blurry and grainy - it is a midtone curve applied
+# to a frame whose midtones are mostly sensor noise, so lifting it lifts the
+# grain and lowering it crushes what little picture is there.
+#
+# So at night gamma is pinned: the preset writes the default, and this loop
+# puts it back whichever way it has moved. The daylight rule below is the one
+# this file shipped with - by day a gamma pulled DOWN is kept, since a lower
+# gamma holds the midtones of a frame that has midtones to hold.
+
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
 # The presets that run from golden PM, through night, to golden AM. Across
@@ -454,7 +466,9 @@ class LightMeter:
                 continue
             name = found.group(1)
             seen.add(name)
-            if name not in TRIM_RULE and name != 'sharpness':
+            # gamma is not trimmed, but its range is needed: the night ceiling
+            # below is a fraction of it.
+            if name not in TRIM_RULE and name not in ('sharpness', GAMMA_CTRL):
                 continue
             low = re.search(r'min=(-?\d+)', line)
             high = re.search(r'max=(-?\d+)', line)
@@ -708,10 +722,19 @@ class LightMeter:
             now = have.get(name)
             if now is None or now == want:
                 continue
+            if name == GAMMA_CTRL and self.dark_preset():
+                # Night gamma is pinned to the factory default. Moved either
+                # way it is put back, and the baseline is never moved to where
+                # it drifted, so one nudge cannot become the new normal for
+                # the rest of the night.
+                _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
+                      f'{name}={want}'])
+                fixed.append(f'{name} {now} -> {want} (night, factory gamma)')
+                continue
             if name == GAMMA_CTRL and now < want:
-                # Pulled down, not up. Allowed, and worth keeping: a lower
-                # gamma holds the midtones together. Take it as the new
-                # ceiling rather than undoing it.
+                # By day, pulled down rather than up. Allowed, and worth
+                # keeping: a lower gamma holds the midtones together. Take it
+                # as the new ceiling rather than undoing it.
                 self.locked_base[name] = now
                 continue
             _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
