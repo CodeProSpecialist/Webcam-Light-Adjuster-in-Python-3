@@ -156,29 +156,32 @@ TRIM_RULE = {
 #
 # Saturation and hue belong to the preset outright: they decide what the
 # colours *are*, not how bright the frame is, and no amount of metering the
-# grey level is evidence about either. Gamma is the awkward one and gets a
-# rule of its own below - it does change brightness, which is exactly why it
-# is tempting, and raising it is the cheapest-looking way to brighten a night
+# grey level is evidence about either. Gamma now belongs to the preset in
+# exactly the same way. It does change brightness, which is what made it
+# tempting, and raising it is the cheapest-looking way to brighten a night
 # frame. It is also the worst: gamma lifts the noise floor along with the
 # shadows and flattens the midtones the number plate lives in, and it does it
-# to the stream the recorder is writing rather than to a copy. So gamma may be
-# left where the preset put it or pulled back DOWN from there, and never
-# raised above it. The software correction, which works on copies of the
-# stills and can be deleted and redone, is where a gamma lift belongs.
+# to the stream the recorder is writing rather than to a copy. Lowering it is
+# no better in practice - it crushes what little picture a dark frame has -
+# and a meter allowed to move it one way drifts there pass after pass. So
+# this loop does not move gamma at all, in either direction and under any
+# preset: whatever the preset wrote is what the camera runs at, and anything
+# else that moves it is put back. The software correction, which works on
+# copies of the stills and can be deleted and redone, is where a gamma lift
+# belongs.
 LOCKED_CONTROLS = ('saturation', 'hue')
 GAMMA_CTRL = 'gamma'
 
-# Night gamma is the camera's factory default and nothing else.
+# Gamma is the preset's value and nothing else.
 #
-# Gamma is left at the factory default on purpose, day and night. Moved either
-# way it turns a night frame blurry and grainy - it is a midtone curve applied
-# to a frame whose midtones are mostly sensor noise, so lifting it lifts the
-# grain and lowering it crushes what little picture is there.
-#
-# So at night gamma is pinned: the preset writes the default, and this loop
-# puts it back whichever way it has moved. The daylight rule below is the one
-# this file shipped with - by day a gamma pulled DOWN is kept, since a lower
-# gamma holds the midtones of a frame that has midtones to hold.
+# Moved either way it turns a night frame blurry and grainy - it is a midtone
+# curve applied to a frame whose midtones are mostly sensor noise, so lifting
+# it lifts the grain and lowering it crushes what little picture is there. By
+# day there is more to lose than to gain in moving it as well, so the rule is
+# the same around the clock rather than one rule per preset: the preset writes
+# gamma, and this loop puts it back whichever way it has moved. The baseline
+# is never moved to where it drifted, so one nudge cannot become the new
+# normal.
 
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
@@ -466,8 +469,8 @@ class LightMeter:
                 continue
             name = found.group(1)
             seen.add(name)
-            # gamma is not trimmed, but its range is needed: the night ceiling
-            # below is a fraction of it.
+            # gamma is never written by this loop, but its range is still
+            # read: the night ceiling below is a fraction of it.
             if name not in TRIM_RULE and name not in ('sharpness', GAMMA_CTRL):
                 continue
             low = re.search(r'min=(-?\d+)', line)
@@ -701,7 +704,7 @@ class LightMeter:
 
     def guard_locked(self):
         """Put saturation, hue and gamma back if they have moved off the
-        preset - and, for gamma, only ever downwards.
+        preset - gamma included, in either direction.
 
         Nothing in this loop writes them, so in normal running this finds
         nothing and costs one read. It is here for the case that is not normal
@@ -722,20 +725,14 @@ class LightMeter:
             now = have.get(name)
             if now is None or now == want:
                 continue
-            if name == GAMMA_CTRL and self.dark_preset():
-                # Night gamma is pinned to the factory default. Moved either
-                # way it is put back, and the baseline is never moved to where
-                # it drifted, so one nudge cannot become the new normal for
-                # the rest of the night.
+            if name == GAMMA_CTRL:
+                # Gamma is pinned to whatever the preset wrote, day and night.
+                # Moved either way it is put back, and the baseline is never
+                # moved to where it drifted, so one nudge cannot become the
+                # new normal.
                 _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
                       f'{name}={want}'])
-                fixed.append(f'{name} {now} -> {want} (night, factory gamma)')
-                continue
-            if name == GAMMA_CTRL and now < want:
-                # By day, pulled down rather than up. Allowed, and worth
-                # keeping: a lower gamma holds the midtones together. Take it
-                # as the new ceiling rather than undoing it.
-                self.locked_base[name] = now
+                fixed.append(f'{name} {now} -> {want} (preset gamma)')
                 continue
             _run(['v4l2-ctl', '-d', self.device, '--set-ctrl',
                   f'{name}={want}'])
@@ -962,7 +959,7 @@ class LightMeter:
             return 0
         sharp = self.set_sharpness(self.wrote.get('gain'))
         # Saturation, hue and gamma are not trimmed; check nothing else moved
-        # them, and pull gamma back down if it was raised.
+        # them, and put gamma back on the preset's value if it did.
         self.guard_locked()
         # The light just moved. Whether that costs any sharpness is a question
         # about the picture, so it is answered from the picture rather than

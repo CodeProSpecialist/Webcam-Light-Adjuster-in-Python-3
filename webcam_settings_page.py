@@ -912,6 +912,18 @@ class Window:
         frame.pack(side='top', fill='x', padx=4, pady=(2, 6))
         self.brain_frame = frame
 
+        # Which brain is live, in plain words and on its own line.
+        #
+        # There are five of them and only one is consulted at a time, so
+        # "loaded from ..." below answers a different question: that is the
+        # folder the file came off, which is a path to read backwards. This
+        # line names the preset whose brain is doing the correcting at this
+        # moment, which is the thing worth knowing before deleting one.
+        self.brain_active = tk.Label(
+            frame, text='active brain: reading...', anchor='w', justify='left',
+            font=('Helvetica', 9, 'bold'), fg='#006633')
+        self.brain_active.pack(fill='x', padx=4, pady=(2, 0))
+
         bar = tk.Frame(frame)
         bar.pack(fill='x')
         self.brain_status = tk.Label(bar, text='reading the brain...', anchor='w',
@@ -1379,6 +1391,34 @@ class Window:
                  '    python3 train_webcam_brain.py --photos <that folder> --force\n')
         return text
 
+    def active_brain_line(self):
+        """'active brain: <name>' for the label above the status line.
+
+        Asked of the enhancement module on every refresh rather than cached,
+        because the preset can change from the scheduler or the other window
+        while this page sits open, and a stale name here would be worse than
+        none - it is what the delete button acts on.
+        """
+        if not webcam_enhance:
+            return 'active brain: none - webcam_enhance.py was not found'
+        family = preset = None
+        try:
+            family = webcam_enhance.active_family()
+        except Exception:                                      # noqa: BLE001
+            family = None
+        if train_webcam_brain:
+            try:
+                _family, preset, _when = train_webcam_brain.active_brain()
+            except Exception:                                  # noqa: BLE001
+                preset = None
+        if not family:
+            return ('active brain: none yet - no preset has been applied, so '
+                    'the analytic correct is doing the work')
+        name = f'active brain: {family}  (brain_{family})'
+        if preset and preset != family:
+            name += f'  -  preset {preset}'
+        return name
+
     def refresh_brain_info(self):
         """Re-read the brain and redraw the block.
 
@@ -1394,6 +1434,11 @@ class Window:
         except Exception as problem:                           # noqa: BLE001
             headline, text = ('could not read the brain', f'{problem}\n')
         self.brain_status.configure(text=headline)
+        if getattr(self, 'brain_active', None):
+            try:
+                self.brain_active.configure(text=self.active_brain_line())
+            except Exception:                                  # noqa: BLE001
+                self.brain_active.configure(text='active brain: could not read it')
         self.brain_text.configure(state='normal')
         self.brain_text.delete('1.0', 'end')
         self.brain_text.insert('end', text)
