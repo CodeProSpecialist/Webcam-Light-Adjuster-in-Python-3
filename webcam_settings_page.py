@@ -894,7 +894,7 @@ class Window:
         tk.Label(self.right, text=f'Error log: {LOG_FILE}', anchor='w', justify='left',
                  font=('Helvetica', 8), wraplength=310, fg='#555555').pack(fill='x', padx=6)
 
-    # ---- brain G's details, under the terminal ----
+    # ---- the active brain's details, under the terminal ----
 
     def build_brain_info(self):
         """Everything about the brain that is doing the correcting.
@@ -907,7 +907,11 @@ class Window:
         screen, including the score a flat "lift everything the same amount"
         answer got, which is the only honest way to read the other numbers.
         """
-        frame = tk.LabelFrame(self.page, text='  brain G - the night vision brain  ',
+        # The title names no particular brain. There are five and which one is
+        # live changes with the preset, so a fixed name on the tile would be
+        # wrong four times out of five; the line under it says which is
+        # running at this moment and is the only place a brain is named.
+        frame = tk.LabelFrame(self.page, text='  the active brain  ',
                               font=('Helvetica', 9, 'bold'))
         frame.pack(side='top', fill='x', padx=4, pady=(2, 6))
         self.brain_frame = frame
@@ -1179,7 +1183,7 @@ class Window:
             family = webcam_enhance.active_family()
         except Exception:                                     # noqa: BLE001
             family = None
-        return f'brain {family}' if family else 'brain G'
+        return f'brain {family}' if family else 'the active brain'
 
     def drain_brain_worker(self):
         """Show what the worker has said, and tidy up when it has finished."""
@@ -1298,7 +1302,7 @@ class Window:
             for key, label in (('dark_input', 'one dark frame'),
                                ('stack_and_clahe', 'stacked + CLAHE'),
                                ('analytic', '+ analytic correct'),
-                               ('brain', '+ brain G')):
+                               ('brain', '+ the active brain')):
                 peak = scored.get(f'{key}_psnr_db')
                 sim = scored.get(f'{key}_ssim')
                 if peak is None:
