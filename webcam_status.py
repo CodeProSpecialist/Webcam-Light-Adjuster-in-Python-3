@@ -217,17 +217,26 @@ def check_brain():
     if enhance is None:
         return {'name': 'Brain G', 'ok': False, 'version': '',
                 'detail': 'webcam_enhance.py not importable', 'hint': ''}
+    family = None
+    try:
+        family = enhance.active_family()
+    except Exception:                                         # noqa: BLE001
+        pass
     folders = []
     try:
-        folders = [path for path in enhance.brain_dirs() if os.path.isdir(path)]
+        folders = [path for path in enhance.brain_dirs(family)
+                   if os.path.isdir(path)]
     except Exception:                                         # noqa: BLE001
         pass
     try:
         # Drop any cached load first, so a brain retrained since this window
-        # opened is the one reported.
-        enhance._brain.loaded = None
+        # opened is the one reported. There is one per preset family now.
+        enhance.clear_brain_cache()
     except Exception:                                         # noqa: BLE001
-        pass
+        try:
+            enhance._brain.loaded = None
+        except Exception:                                      # noqa: BLE001
+            pass
     try:
         brain = enhance._brain()
     except Exception as problem:                              # noqa: BLE001
@@ -240,7 +249,8 @@ def check_brain():
                 'hint': 'train one with the button in the tile above'}
     where = os.path.basename(folders[0].rstrip('/')) if folders else ''
     own = 'self-trained' if 'night_model' in where or 'brain_g' in where else where
-    return {'name': 'Brain G', 'ok': True, 'version': own,
+    named = f'Brain {family}' if family else 'Brain G'
+    return {'name': named, 'ok': True, 'version': own,
             'detail': f'loaded{" from " + where if where else ""}', 'hint': ''}
 
 

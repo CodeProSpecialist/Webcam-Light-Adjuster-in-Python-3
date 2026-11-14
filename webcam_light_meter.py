@@ -622,7 +622,10 @@ class LightMeter:
         # self_train_if_ready does nothing and returns quickly when it is not
         # time, so calling it here costs nothing.
         try:
-            did, line = train_webcam_brain.self_train_if_ready(quiet=True)
+            # The brain for the preset in force, trained on the frames
+            # harvested under that preset - not one brain for the whole day.
+            did, line = train_webcam_brain.self_train_if_ready(
+                quiet=True, preset=train_webcam_brain.current_preset())
         except Exception as problem:                           # noqa: BLE001
             self.train_note = f'retrain failed: {problem}'
             log(self.train_note)

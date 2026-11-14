@@ -224,26 +224,98 @@ def _brain_module():
 _brain_module.module = None
 
 
-def brain_dirs():
+# Sentinel: _brain(None) means "no preset recorded", which is a real answer,
+# so it cannot double as "work it out yourself".
+_UNSET = object()
+
+
+def active_family():
+    """The brain family the preset in force belongs to, or None.
+
+    night and night_mono share one brain, day and bright_sun share another,
+    and the two golden hours have one each - see BRAIN_PRESETS in
+    train_webcam_brain.py.
+    """
+    module = _brain_module()
+    if not module or not hasattr(module, 'brain_family'):
+        return None
+    try:
+        return module.brain_family()
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def brain_mandate(family=None, meta=None):
+    """What the brain in force is allowed to do.
+
+    The mandate recorded in the model's own meta.json wins, so a brain always
+    decodes against the range it was trained against even if the table in
+    train_webcam_brain.py changes afterwards. Failing that, the table; failing
+    that, the all-day default. Never returns None and never returns a range
+    that is the wrong way round.
+    """
+    module = _brain_module()
+    mandate = {}
+    if module is not None:
+        try:
+            mandate = module.brain_mandate(family)
+        except Exception:                                     # noqa: BLE001
+            mandate = {}
+    if not mandate:
+        mandate = {'gain_min': 1.0, 'gain_max': 12.0, 'sat_min': 0.25,
+                   'sat_max': 4.0, 'dim_lift': 0.0, 'clahe_scale': 1.0,
+                   'denoise_scale': 1.0, 'sharpen': 0.0,
+                   'tint': (1.0, 1.0, 1.0), 'note': 'all-day default'}
+    recorded = (meta or {}).get('mandate')
+    if isinstance(recorded, dict):
+        mandate = dict(mandate, **recorded)
+    mandate['gain_min'] = max(0.05, float(mandate.get('gain_min', 1.0)))
+    mandate['gain_max'] = max(mandate['gain_min'] * 1.0001,
+                              float(mandate.get('gain_max', 12.0)))
+    mandate['sat_min'] = max(0.01, float(mandate.get('sat_min', 0.25)))
+    mandate['sat_max'] = max(mandate['sat_min'] * 1.0001,
+                             float(mandate.get('sat_max', 4.0)))
+    tint = mandate.get('tint') or (1.0, 1.0, 1.0)
+    try:
+        mandate['tint'] = tuple(float(v) for v in tint)[:3]
+    except (TypeError, ValueError):
+        mandate['tint'] = (1.0, 1.0, 1.0)
+    if len(mandate['tint']) != 3:
+        mandate['tint'] = (1.0, 1.0, 1.0)
+    return mandate
+
+
+def brain_dirs(family=None):
     """Where to look for the trained brain, in order.
 
-    The environment first, then beside this file - which is where the copy
-    that ships with these scripts lives - then the folder the trainer writes
-    to, so a brain retrained on this camera's own photos is picked up without
-    anything having to be told about it.
+    The environment first, then the folder the trainer writes to for THIS
+    preset's brain, then a copy of that brain shipped beside this file.
+
+    What is deliberately not in the list, once a family is known, is the old
+    all-day brain: that model was trained on bright and dark frames together
+    and learnt to pull the gain below one on frames that were already bright,
+    which is what was darkening the picture in daylight. When a preset's own
+    brain is missing it is better to fall back to the analytic lift than to
+    run a brain trained on the wrong kind of light. The all-day folder is
+    still read when no preset has been recorded at all, so an install that
+    has not applied a preset yet is no worse off than before.
     """
     here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.join(os.path.expanduser('~'), '.webcam-models')
     found = []
     if os.environ.get('WEBCAM_BRAIN_DIR'):
         found.append(os.environ['WEBCAM_BRAIN_DIR'])
-    found.append(os.path.join(os.path.expanduser('~'), '.webcam-models',
-                              'brain_g_night_model'))
-    found.append(os.path.join(here, 'brain_g_night_model'))
+    if family:
+        found.append(os.path.join(root, f'brain_{family}'))
+        found.append(os.path.join(here, f'brain_{family}'))
+    else:
+        found.append(os.path.join(root, 'brain_g_night_model'))
+        found.append(os.path.join(here, 'brain_g_night_model'))
     return found
 
 
-def _brain():
-    """The brain, loaded once, or None.
+def _brain(family=_UNSET):
+    """The brain for the preset in force, loaded once per family, or None.
 
     Three things are checked before it is used, and any of them failing means
     the analytic correct runs instead of a brain that cannot be trusted:
@@ -254,18 +326,34 @@ def _brain():
       * the sha256 in meta.json has to match the model file, so a half
         written or edited model is not run
       * it loads at all
+
+    A fourth thing is checked when the brain came from a per-preset folder:
+    the family recorded in meta.json has to be the family being asked for, so
+    a night brain cannot be loaded for a daylight frame by a stale copy or a
+    hand-moved folder.
+
+    Models are cached per family, so a preset change picks up that preset's
+    own brain on the next frame without reloading the others.
     """
-    if _brain.loaded is not None:
-        return _brain.loaded or None
-    _brain.loaded = False
-    _brain.why = 'no trained brain found'
+    if family is _UNSET:
+        family = active_family()
+    if family in _brain.cache:
+        _brain.family = family
+        _brain.why = _brain.reasons.get(family, '')
+        return _brain.cache[family] or None
+    _brain.cache[family] = False
+    _brain.family = family
+    _brain.why = ('no trained brain found'
+                  + (f' for the {family} preset' if family else ''))
+    _brain.reasons[family] = _brain.why
 
     module = _brain_module()
     if not module:
         _brain.why = 'train_webcam_brain.py is not next to this file'
+        _brain.reasons[family] = _brain.why
         return None
 
-    for folder in brain_dirs():
+    for folder in brain_dirs(family):
         model_path = os.path.join(folder, 'model.keras')
         meta_path = os.path.join(folder, 'meta.json')
         if not os.path.isfile(model_path):
@@ -277,11 +365,23 @@ def _brain():
         except (OSError, ValueError):
             meta = {}
 
+        # The brain in a per-preset folder has to say it is that preset's.
+        # A model with no family recorded is an older all-day brain; it is
+        # accepted only when no family is being asked for.
+        if family:
+            recorded_family = meta.get('brain_family')
+            if recorded_family and recorded_family != family:
+                _brain.why = (f'the brain in {folder} was trained for '
+                              f'{recorded_family}, not {family}')
+                _brain.reasons[family] = _brain.why
+                continue
+
         wanted = module.BRAIN_G_FEATURES
         if meta.get('feature_count') not in (None, wanted):
             _brain.why = (f'the brain in {folder} is stale '
                           f'({meta["feature_count"]} features against {wanted}) '
                           '- retrain it with train_webcam_brain.py --force')
+            _brain.reasons[family] = _brain.why
             continue
 
         recorded = meta.get('model_sha256')
@@ -292,6 +392,7 @@ def _brain():
                 actual = ''
             if actual and actual != recorded:
                 _brain.why = f'the brain in {folder} does not match its sha256'
+                _brain.reasons[family] = _brain.why
                 continue
 
         try:
@@ -300,18 +401,37 @@ def _brain():
             model = keras.models.load_model(model_path, compile=False)
         except Exception as problem:                          # noqa: BLE001
             _brain.why = f'could not load the brain: {problem}'
+            _brain.reasons[family] = _brain.why
             _oops('brain G.load', problem,
                   detail=f'from {folder} - TensorFlow may be the problem')
             continue
 
-        _brain.loaded = (model, meta, folder)
+        _brain.cache[family] = (model, meta, folder)
         _brain.why = ''
-        return _brain.loaded
+        _brain.reasons[family] = ''
+        return _brain.cache[family]
     return None
 
 
-_brain.loaded = None
+# One entry per family, so a preset change loads that preset's brain and
+# leaves the others where they are. None is the key for "no preset recorded".
+_brain.cache = {}
+_brain.reasons = {}
+_brain.family = None
 _brain.why = ''
+
+
+def clear_brain_cache():
+    """Forget every loaded brain, so the next frame reloads from disk.
+
+    Called by the window after a retrain, and worth calling after anything
+    that writes a model, since a brain is otherwise held for the life of the
+    process.
+    """
+    _brain.cache = {}
+    _brain.reasons = {}
+    _brain.family = None
+    _brain.why = ''
 
 
 def read_settings():
@@ -816,10 +936,16 @@ class Enhancer:
         # 2. CLAHE on lightness only, so the colour is left where it is. Run
         # on L of LAB rather than on the three channels separately, which
         # would pull the colour balance about tile by tile.
+        # How hard the local contrast is pushed is this brain's business too:
+        # a night frame wants more of it than a daylight one, and the day
+        # brain is left on the standard clip it always had.
+        family = active_family()
+        mandate = brain_mandate(family)
+        clip = CLAHE_CLIP * float(mandate.get('clahe_scale') or 1.0)
         try:
             lab = cv2.cvtColor(stacked, cv2.COLOR_BGR2LAB)
             light, green_red, blue_yellow = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP,
+            clahe = cv2.createCLAHE(clipLimit=clip,
                                     tileGridSize=(CLAHE_TILES, CLAHE_TILES))
             lab = cv2.merge((clahe.apply(light), green_red, blue_yellow))
             result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
@@ -829,18 +955,19 @@ class Enhancer:
             # shadows a tile at a time. Without it the frame still gets the
             # lift, it just stays flat, so say so loudly and carry on.
             _oops('night correction.CLAHE', problem,
-                  detail=f'clip {CLAHE_CLIP}, {CLAHE_TILES}x{CLAHE_TILES} '
+                  detail=f'clip {clip}, {CLAHE_TILES}x{CLAHE_TILES} '
                          'tiles - frame left without local contrast')
             result = stacked
             done.append('CLAHE failed')
 
         # 3. the auto correct, by brain G when it is there
-        brain = _brain()
+        brain = _brain(family)
+        named = f'brain {family}' if family else 'brain G'
         if brain is not None:
             lifted = self._brain_lift(brain, result)
             if lifted is not None:
                 result = lifted
-                done.append('brain G')
+                done.append(named)
             else:
                 result = self._analytic_lift(result)
                 done.append('auto correct (the brain would not run, analytic)')
@@ -864,10 +991,15 @@ class Enhancer:
         # and the CLAHE that came before it.
         lifted_by = float(numpy.mean(result.astype(numpy.float32) + 1.0) /
                           max(float(numpy.mean(stacked.astype(numpy.float32))), 1.0))
-        if lifted_by > 1.6 or len(images) < 4:
-            # h for luma, hColor for the colour channels.
-            luma_strength = 3 if len(images) >= 4 else 5
-            chroma_strength = int(min(18, 6 + 4 * lifted_by))
+        denoise_scale = float(mandate.get('denoise_scale') or 1.0)
+        if (lifted_by > 1.6 or len(images) < 4) and denoise_scale > 0:
+            # h for luma, hColor for the colour channels, both scaled by what
+            # this brain's light actually needs: a night frame lifted twelve
+            # times is mostly grain, a sunlit one has almost none.
+            luma_strength = max(1, int(round((3 if len(images) >= 4 else 5)
+                                             * denoise_scale)))
+            chroma_strength = max(1, int(round(min(18, 6 + 4 * lifted_by)
+                                               * denoise_scale)))
             try:
                 result = cv2.fastNlMeansDenoisingColored(
                     result, None, luma_strength, chroma_strength, 7, 21)
@@ -880,6 +1012,23 @@ class Enhancer:
                       detail='frame kept undenoised - expect colour speckle '
                              'on a hard lift', once_key='denoise')
                 done.append('denoise unavailable')
+
+        # Put the edges back. Denoising a hard-lifted night frame takes the
+        # grain out and some of the detail with it, so the brains whose light
+        # needs denoising get an unsharp pass after it - the blurred copy
+        # subtracted back off, which is the oldest trick there is and the one
+        # that does not invent anything. Day has sharpen 0 and skips this
+        # entirely.
+        sharpen = float(mandate.get('sharpen') or 0.0)
+        if sharpen > 0:
+            try:
+                blurred = cv2.GaussianBlur(result, (0, 0), 1.6)
+                result = cv2.addWeighted(result, 1.0 + sharpen,
+                                         blurred, -sharpen, 0)
+                done.append(f'sharpened {sharpen:.2f}')
+            except Exception as problem:                      # noqa: BLE001
+                _oops('night correction.sharpen', problem,
+                      detail='frame left unsharpened', once_key='sharpen')
 
         # 4. find the car or the person, and give them a second, stronger
         # lift of their own.
@@ -1083,7 +1232,8 @@ class Enhancer:
         module = _brain_module()
         if not module:
             return None
-        model, _meta, _folder = brain
+        model, meta, _folder = brain
+        mandate = brain_mandate(active_family(), meta)
         try:
             height, width = image.shape[:2]
             work = image.astype(numpy.float32) / 255.0
@@ -1102,9 +1252,34 @@ class Enhancer:
             short, wide = small.shape[:2]
             gain = answer[:, 0].reshape(short, wide)
             saturation = answer[:, 1].reshape(short, wide)
-            # Back out of the 0 to 1 the brain works in.
-            gain = numpy.exp(gain * numpy.log(module.GAIN_MAX))
-            saturation = numpy.exp((saturation * 2.0 - 1.0) * numpy.log(4.0))
+            # Back out of the 0 to 1 the brain works in, into this brain's own
+            # range - the same mapping targets_for used on the way in. This is
+            # what makes the mandate real rather than advisory: the night,
+            # golden and day brains decode into a range that starts at 1.0, so
+            # no output of theirs can darken a pixel, and bright_sun decodes
+            # into a range that ends at 1.0, so no output of its can brighten
+            # one.
+            g_low, g_high = mandate['gain_min'], mandate['gain_max']
+            s_low, s_high = mandate['sat_min'], mandate['sat_max']
+            gain = g_low * numpy.power(g_high / g_low,
+                                       numpy.clip(gain, 0.0, 1.0))
+            saturation = s_low * numpy.power(s_high / s_low,
+                                             numpy.clip(saturation, 0.0, 1.0))
+
+            # The dim-light part of the lift, for the two golden hours and for
+            # night. The light at sunrise and sunset moves the whole time, and
+            # a brain cannot see the clock - but it can be told to lean on the
+            # one number that tracks the light directly, which is how bright
+            # the frame already is. A frame at or above mid grey gets nothing
+            # extra; the dimmer it is below that, the more it gets, up to half
+            # again at black. Day and bright sun have dim_lift 0 and so are
+            # untouched by this.
+            dim_lift = float(mandate.get('dim_lift') or 0.0)
+            if dim_lift > 0:
+                level = float(numpy.mean(small)) if small.size else 0.45
+                shortfall = max(0.0, min(1.0, (0.45 - level) / 0.45))
+                gain = gain * (1.0 + 0.5 * dim_lift * shortfall)
+                gain = numpy.clip(gain, g_low, g_high)
 
             if BRAIN_SMOOTH > 1:
                 gain = cv2.blur(gain, (BRAIN_SMOOTH, BRAIN_SMOOTH),
@@ -1124,6 +1299,13 @@ class Enhancer:
             # The luma takes the gain; the colour around it takes the gain and
             # the saturation together.
             out = luma * gain + (work - luma) * gain * saturation
+
+            # A fixed cast the gain cannot express - bright sun's touch of
+            # blue and touch less red. (1, 1, 1) for every other brain, which
+            # multiplies out to nothing.
+            tint = mandate['tint']
+            if tint != (1.0, 1.0, 1.0):
+                out = out * numpy.asarray(tint, dtype=numpy.float32)
             return numpy.clip(out * 255.0, 0, 255).astype(numpy.uint8)
         except Exception as problem:                          # noqa: BLE001
             _oops('brain G.predict', problem, detail=(
@@ -1324,13 +1506,17 @@ class Enhancer:
         else:
             parts = ['ImageMagick doing the stacking and the stretch '
                      '(no OpenCV, so no brain either)']
-        brain = _brain()
+        family = active_family()
+        brain = _brain(family)
+        named = f'brain {family}' if family else 'brain G'
         if brain is not None:
             _model, meta, folder = brain
             trained = meta.get('trained_at', 'unknown date')
             source = meta.get('trained_from', 'general photos')
-            parts.append(f'TensorFlow running brain G from {folder} '
-                         f'(trained on {source}, {trained})')
+            note = brain_mandate(family, meta).get('note') or ''
+            parts.append(f'TensorFlow running {named} from {folder} '
+                         f'(trained on {source}, {trained})'
+                         + (f' - {note}' if note else ''))
         else:
             parts.append(f'analytic correct instead of a brain - '
                          f'{_brain.why or "no brain"}')

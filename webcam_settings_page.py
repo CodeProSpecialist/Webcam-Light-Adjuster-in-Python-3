@@ -1164,8 +1164,12 @@ class Window:
             if getattr(self, 'train_status', None):
                 self.train_status.configure(text=self.train_summary())
             if webcam_enhance:
-                # The brain on disk has changed, so drop the loaded one.
-                webcam_enhance._brain.loaded = None
+                # The brains on disk have changed, so drop every loaded one -
+                # there is one per preset family.
+                try:
+                    webcam_enhance.clear_brain_cache()
+                except AttributeError:
+                    webcam_enhance._brain.loaded = None
             self.refresh_brain_info()
             return
         self.root.after(400, self.drain_brain_worker)
@@ -1180,7 +1184,13 @@ class Window:
         brain = webcam_enhance._brain()
         if brain is None:
             why = getattr(webcam_enhance._brain, 'why', '') or 'no trained brain found'
-            looked = '\n'.join('    ' + d for d in webcam_enhance.brain_dirs())
+            family = None
+            try:
+                family = webcam_enhance.active_family()
+            except Exception:                                 # noqa: BLE001
+                pass
+            looked = '\n'.join('    ' + d
+                               for d in webcam_enhance.brain_dirs(family))
             return ('not loaded - the analytic correct is doing the work',
                     f'Why: {why}\n\nLooked in, in this order:\n{looked}\n\n'
                     'The analytic correct still runs, so the two switches above '

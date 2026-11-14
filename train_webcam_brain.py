@@ -64,7 +64,10 @@ afternoon, copy those out somewhere, and train on them.
 With no --photos it looks in a few likely folders, including the snapshot
 folder, and takes whatever is clear enough to be worth training on.
 
-The model is written to ~/.webcam-models/brain_g_night_model/ and then made
+With --preset (or --all-presets) the model is written to
+~/.webcam-models/brain_<family>/ - one brain per lighting regime, so a
+night-trained brain is never applied to a bright daylight frame. Without a
+preset the model is written to ~/.webcam-models/brain_g_night_model/ and then made
 read-only, because inference must never write to it. --force is the only way
 to retrain over one that is already there.
 """
@@ -138,6 +141,13 @@ QUOTA_DIM = 40
 MIN_CLEAR_FRAMES = 24
 MIN_BUCKETS = 3
 
+# The same two tests for one preset's brain. A family only ever sees its own
+# lighting regime, so it cannot cover three preset/light combinations and it
+# fills up more slowly - but it also has far less to learn, because every
+# frame it sees is the same kind of light.
+MIN_CLEAR_FRAMES_PRESET = 12
+MIN_BUCKETS_PRESET = 2
+
 # A dark frame and a clear frame of the same scene this far apart in time are
 # treated as a real pair. Long enough to catch a preset change settling,
 # short enough that it is still the same night and the same scene.
@@ -147,11 +157,179 @@ PAIR_WINDOW = 150
 # gets folded in but the thing is not retraining every hour.
 RETRAIN_EVERY = 24 * 3600
 
-MODEL_DIR = os.environ.get(
-    'WEBCAM_BRAIN_DIR',
-    os.path.join(os.path.expanduser('~'), '.webcam-models', 'brain_g_night_model'))
+# ---------------------------------------------------------------------------
+# one brain per lighting preset
+#
+# A single brain harvested across the whole day sees both bright daytime
+# frames and dark night frames with the same well-exposed targets, and the
+# cheapest way for it to cut its error is to learn gain < 1 on frames that
+# are already bright - which is exactly the darkening that was showing up in
+# daylight. The fix is one specialised brain per lighting regime, so a
+# night-trained brain is never asked about a bright frame and vice versa.
+#
+# The six presets collapse into five regimes: the only two that share a brain
+# are night and night_mono, because that is the same light with and without
+# colour. Flat overcast daylight and direct sun are not the same light - the
+# sun frame is clipped in the highlights and deep in the shadows where the
+# overcast one is neither - so bright_sun gets a brain of its own.
+# ---------------------------------------------------------------------------
+BRAIN_PRESETS = {
+    'night': ('night', 'night_mono'),
+    'golden_am': ('golden_am',),
+    'day': ('day',),
+    'bright_sun': ('bright_sun',),
+    'golden_pm': ('golden_pm',),
+}
+# What each brain is allowed to do, and how hard.
+#
+# This is the part that stops a brain from working against the light it was
+# given. Four of the five have gain_min = 1.0 and so may only ever brighten a
+# pixel, whatever they learn - which is what the darkening in daylight was.
+# bright_sun is the single deliberate exception, because direct sun is the one
+# case where the frame is genuinely too bright. What differs beyond that is
+# how much each one may ask for, and how it treats grain, clarity and colour:
+#
+#   night       brighten only, and as hard as the sensor allows. The frame is
+#               dark, grainy and soft, so this is the one that gets the full
+#               lift, the strongest local contrast, the hardest denoise and
+#               an unsharp pass to put the edges back that the grain and the
+#               denoise took away.
+#   golden_am   sunrise. The light climbs minute by minute, so the lift has
+#               to come off as it does: a moderate ceiling, and the dim-light
+#               part of the lift falls away as the frame brightens.
+#   day         left exactly as it was - the behaviour the daylight pictures
+#               already had. Nothing scaled, nothing added.
+#   bright_sun  direct sun, and the only brain that may go the other way: its
+#               gain range sits below 1, so it pulls the level down rather
+#               than up, and it cools the colour slightly - a little more
+#               blue, a little less red - which is what takes the yellow cast
+#               off a frame shot in full sun.
+#   golden_pm   sunset. The mirror of golden_am: the light drops away, and
+#               the dimmer the frame the more lift it is allowed, up to a
+#               dusk ceiling well above daylight's.
+#
+#   gain_min/gain_max   the range the gain output is decoded into, so the
+#                       brain physically cannot ask for anything outside it
+#   sat_min/sat_max     the same for the colour multiplier
+#   dim_lift            how much extra lift a dim frame gets, 0 for none
+#   clahe_scale         local contrast, against the standard clip
+#   denoise_scale       grain cleaning, against the standard strength
+#   sharpen             unsharp amount after the denoise, 0 for none
+#   tint                a fixed BGR multiplier applied after the lift, for a
+#                       warm or cool cast the gain cannot express. (1, 1, 1)
+#                       leaves the colour alone.
+BRAIN_MANDATE = {
+    'night': dict(gain_min=1.0, gain_max=12.0, sat_min=0.35, sat_max=2.5,
+                  dim_lift=1.0, clahe_scale=1.25, denoise_scale=1.4,
+                  sharpen=0.55, tint=(1.0, 1.0, 1.0),
+                  note='brighten only, hardest lift, most denoise, sharpened'),
+    'golden_am': dict(gain_min=1.0, gain_max=5.0, sat_min=0.5, sat_max=2.0,
+                      dim_lift=0.8, clahe_scale=1.1, denoise_scale=1.1,
+                      sharpen=0.25, tint=(1.0, 1.0, 1.0),
+                      note='sunrise - lift eases off as the light climbs'),
+    'day': dict(gain_min=1.0, gain_max=12.0, sat_min=0.25, sat_max=4.0,
+                dim_lift=0.0, clahe_scale=1.0, denoise_scale=1.0, sharpen=0.0,
+                tint=(1.0, 1.0, 1.0),
+                note='unchanged - the daylight behaviour as it was'),
+    # The one brain that darkens. 0.7 to 1.0 means it can take about a third
+    # off the level at most and can always decline to change it at all, and
+    # the tint is a touch of blue with a touch less red - BGR order, so the
+    # first number is the blue one.
+    'bright_sun': dict(gain_min=0.7, gain_max=1.0, sat_min=0.6, sat_max=1.8,
+                       dim_lift=0.0, clahe_scale=1.15, denoise_scale=0.8,
+                       sharpen=0.15, tint=(1.06, 1.0, 0.96),
+                       note='direct sun - darkens a little and cools the '
+                            'colour slightly'),
+    'golden_pm': dict(gain_min=1.0, gain_max=6.0, sat_min=0.5, sat_max=2.0,
+                      dim_lift=1.0, clahe_scale=1.1, denoise_scale=1.15,
+                      sharpen=0.3, tint=(1.0, 1.0, 1.0),
+                      note='sunset - the dimmer the frame, the more lift'),
+}
+
+# What a brain with no mandate of its own gets: the old all-day behaviour,
+# with the floor of 1.0 that every brain has.
+DEFAULT_MANDATE = dict(gain_min=1.0, gain_max=GAIN_MAX, sat_min=0.25,
+                       sat_max=4.0, dim_lift=0.0, clahe_scale=1.0,
+                       denoise_scale=1.0, sharpen=0.0, tint=(1.0, 1.0, 1.0),
+                       note='all-day default')
+
+
+def brain_mandate(family=None):
+    """What one brain is allowed to do. Never returns None."""
+    return dict(BRAIN_MANDATE.get(family) or DEFAULT_MANDATE)
+
+
+BRAIN_FAMILIES = tuple(BRAIN_PRESETS)
+_PRESET_FAMILY = {preset: family
+                  for family, presets in BRAIN_PRESETS.items()
+                  for preset in presets}
+
+MODELS_ROOT = os.path.join(os.path.expanduser('~'), '.webcam-models')
+
+# Where the single all-day brain used to live. Still read when no preset has
+# been recorded, so an install that has not yet applied a preset is no worse
+# off than it was.
+LEGACY_MODEL_DIR = os.path.join(MODELS_ROOT, 'brain_g_night_model')
+
+
+def brain_family(preset=None):
+    """The brain a preset belongs to, or None if the preset is unknown.
+
+    Takes either a preset name ('night_mono') or a family name ('night'), so
+    callers can pass whichever they have. With nothing passed it reads the
+    preset in force.
+    """
+    if preset is None:
+        preset = current_preset()
+    name = (preset or '').strip().lower().replace('-', '_').replace(' ', '_')
+    if name in BRAIN_PRESETS:
+        return name
+    return _PRESET_FAMILY.get(name)
+
+
+def brain_dir_for(family=None):
+    """The folder one family's brain lives in.
+
+    WEBCAM_BRAIN_DIR still overrides everything, which is how a single brain
+    is forced for testing. With no family - no preset recorded yet - the
+    legacy all-day folder is used.
+    """
+    forced = os.environ.get('WEBCAM_BRAIN_DIR')
+    if forced:
+        return forced
+    if not family:
+        return LEGACY_MODEL_DIR
+    return os.path.join(MODELS_ROOT, f'brain_{family}')
+
+
+# The family currently being trained or deleted. MODEL_DIR and its two paths
+# follow it, so every existing reference to MODEL_PATH keeps working and only
+# has to be pointed at the right brain first, with use_brain().
+ACTIVE_BRAIN = None
+MODEL_DIR = brain_dir_for(None)
 MODEL_PATH = os.path.join(MODEL_DIR, 'model.keras')
 META_PATH = os.path.join(MODEL_DIR, 'meta.json')
+
+
+def use_brain(which=None):
+    """Point MODEL_DIR, MODEL_PATH and META_PATH at one preset's brain.
+
+    Returns the family selected, or None for the legacy all-day folder.
+    """
+    global ACTIVE_BRAIN, MODEL_DIR, MODEL_PATH, META_PATH   # noqa: PLW0603
+    family = which if which in BRAIN_PRESETS else brain_family(which)
+    ACTIVE_BRAIN = family
+    MODEL_DIR = brain_dir_for(family)
+    MODEL_PATH = os.path.join(MODEL_DIR, 'model.keras')
+    META_PATH = os.path.join(MODEL_DIR, 'meta.json')
+    return family
+
+
+def family_presets(family=None):
+    """The preset names one family covers, or None for all of them."""
+    if not family:
+        return None
+    return BRAIN_PRESETS.get(family)
 
 # The brain that ships beside these scripts. It is deleted once a brain trained
 # on this camera is in place and has been shown to be no worse - see
@@ -450,10 +628,21 @@ def harvest(frame, preset=None, gain_fraction=None, controls=None, when=None):
     return (True, note)
 
 
-def corpus_state():
+def corpus_state(family=None):
     """What is in the training set, for the window and for the decision to
-    retrain."""
+    retrain.
+
+    With a family, only the frames harvested under that family's presets are
+    counted - which is what one specialised brain is trained on.
+    """
     index = read_index()
+    frames = index['frames']
+    wanted = family_presets(family)
+    if wanted:
+        frames = [f for f in frames
+                  if (f.get('preset') or '').strip().lower().replace('-', '_')
+                  in wanted]
+        index = dict(index, frames=frames)
     clear = [f for f in index['frames'] if f['kind'] == 'clear']
     dim = [f for f in index['frames'] if f['kind'] == 'dim']
     buckets = sorted({f['bucket'] for f in clear})
@@ -473,10 +662,11 @@ def corpus_state():
         'last_trained': index.get('last_trained', 0),
         'trainings': index.get('trainings', 0),
         'folder': CORPUS_DIR,
+        'family': family,
     }
 
 
-def ready_to_train(state=None):
+def ready_to_train(state=None, family=None):
     """Whether there is enough of this camera's own light to train on.
 
     Both tests are about spread rather than volume. A hundred frames of one
@@ -484,33 +674,61 @@ def ready_to_train(state=None):
     what is wanted is frames from across the presets and across the day, which
     is what the 24 hour harvest is for.
     """
-    state = state or corpus_state()
-    if state['clear_frames'] < MIN_CLEAR_FRAMES:
-        return (False, f'{state["clear_frames"]} well-exposed frames of '
-                       f'{MIN_CLEAR_FRAMES} needed - they come in as the camera '
+    state = state or corpus_state(family)
+    family = family or state.get('family')
+    want_frames = MIN_CLEAR_FRAMES_PRESET if family else MIN_CLEAR_FRAMES
+    want_buckets = MIN_BUCKETS_PRESET if family else MIN_BUCKETS
+    where = f' under the {family} preset' if family else ''
+    if state['clear_frames'] < want_frames:
+        return (False, f'{state["clear_frames"]} well-exposed frames{where} of '
+                       f'{want_frames} needed - they come in as the camera '
                        f'sees daylight, dusk or a lit scene')
-    if state['bucket_count'] < MIN_BUCKETS:
+    if state['bucket_count'] < want_buckets:
         return (False, f'frames from {state["bucket_count"]} preset/light '
-                       f'combinations of {MIN_BUCKETS} needed - let the schedule '
-                       f'run through more of the day')
+                       f'combinations{where} of {want_buckets} needed - let the '
+                       f'schedule run through more of the day')
     return (True, f'{state["clear_frames"]} well-exposed frames across '
                   f'{state["bucket_count"]} preset/light combinations, '
                   f'{state["real_pairs"]} real pairs, '
                   f'{state["hours_covered"]} hours covered')
 
 
-def corpus_photos(limit=400):
-    """The well exposed frames, as the trainer's photo list."""
+def _frames_under(family, kind):
+    """The harvested file names of one kind, under one family's presets."""
+    wanted = family_presets(family)
+    names = []
+    for record in read_index()['frames']:
+        if record['kind'] != kind:
+            continue
+        if wanted is not None:
+            preset = (record.get('preset') or '').strip().lower()
+            if preset.replace('-', '_') not in wanted:
+                continue
+        names.append(record['file'])
+    return names
+
+
+def corpus_photos(limit=400, family=None):
+    """The well exposed frames, as the trainer's photo list.
+
+    With a family, only that family's own lighting regime - which is the
+    whole point of the per-preset brains.
+    """
     folder = os.path.join(CORPUS_DIR, 'clear')
     if not os.path.isdir(folder):
         return []
     # want_clear=False: these were already gated by is_clear on the way in,
     # and re-gating here with the general photo test would throw away frames
     # of this camera's own scene for being less contrasty than a stock photo.
-    return load_photos(folder, limit=limit, want_clear=False)
+    if not family:
+        return load_photos(folder, limit=limit, want_clear=False)
+    paths = [os.path.join(folder, name)
+             for name in _frames_under(family, 'clear')]
+    paths = [path for path in paths if os.path.isfile(path)]
+    return load_photo_paths(paths, limit=limit, want_clear=False)
 
 
-def corpus_pairs(limit=200):
+def corpus_pairs(limit=200, family=None):
     """The real pairs: a dark frame from this camera with a well exposed frame
     of the same scene, as (dark, clear) float images.
 
@@ -521,10 +739,15 @@ def corpus_pairs(limit=200):
 
     index = read_index()
     by_name = {f['file']: f for f in index['frames']}
+    wanted = family_presets(family)
     pairs = []
     for record in index['frames']:
         if record['kind'] != 'dim' or not record.get('pair_with'):
             continue
+        if wanted is not None:
+            preset = (record.get('preset') or '').strip().lower()
+            if preset.replace('-', '_') not in wanted:
+                continue
         clear_record = by_name.get(record['pair_with'])
         if not clear_record:
             continue
@@ -561,7 +784,7 @@ def make_pair_samples(pairs, count, rng, crop=128):
         clear_crop = clear[top:top + size, left:left + size]
 
         planes = feature_planes(dark_crop)
-        answers = targets_for(dark_crop, clear_crop)
+        answers = targets_for(dark_crop, clear_crop, family=ACTIVE_BRAIN)
         take = min(256, count - filled)
         ys = rng.integers(0, size, take)
         xs = rng.integers(0, size, take)
@@ -582,6 +805,15 @@ def retire_shipped_brain():
         return (False, 'no shipped brain to delete')
     if not os.path.isfile(MODEL_PATH):
         return (False, 'refusing to delete it - there is no self-trained brain yet')
+    # With one brain per preset, the shipped brain is still the only thing
+    # standing behind a family that has not trained yet, so it is kept until
+    # all five families have one of their own.
+    missing = [family for family in BRAIN_FAMILIES
+               if not os.path.isfile(os.path.join(brain_dir_for(family),
+                                                  'model.keras'))]
+    if missing:
+        return (False, 'keeping it - no brain trained yet for '
+                       + ', '.join(missing))
     removed = []
     for name in ('model.keras', 'meta.json'):
         path = os.path.join(SHIPPED_DIR, name)
@@ -662,13 +894,20 @@ def degrade(clear, rng):
     return dark, frames
 
 
-def targets_for(dark, clear):
+def targets_for(dark, clear, family=None):
     """What the brain should have said, for every pixel.
 
     The gain target is simply how much brighter the clear pixel is than the
     dark one. The saturation target is what the colour needs after that gain
     has been applied, so that the two outputs together land on the clear
     photo's own colour rather than on a lifted grey version of it.
+
+    Both targets are clipped to the family's mandate, so a brain is never
+    shown an answer it is not allowed to give: the targets, the decode at
+    inference and the recorded range all come from the same place. For four of
+    the five families the floor on the gain is 1.0, so a pixel is never a
+    target for being made darker than the camera recorded it; bright_sun is
+    the exception and its range sits below 1.
     """
     import cv2
     import numpy as np
@@ -679,15 +918,23 @@ def targets_for(dark, clear):
     y_clear = cv2.cvtColor((clear * 255).astype(np.uint8),
                            cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
 
+    mandate = brain_mandate(family)
+    g_low = max(0.05, float(mandate['gain_min']))
+    g_high = max(g_low * 1.0001, float(mandate['gain_max']))
+    s_low = float(mandate['sat_min'])
+    s_high = max(s_low * 1.0001, float(mandate['sat_max']))
+
     gain = (y_clear + eps) / (y_dark + eps)
-    gain = np.clip(gain, 1.0, GAIN_MAX)
-    t_gain = np.log(gain) / np.log(GAIN_MAX)          # 0 to 1
+    gain = np.clip(gain, g_low, g_high)
+    # 0 to 1 across the family's own range, which is the same mapping the
+    # decode at inference reverses.
+    t_gain = np.log(gain / g_low) / np.log(g_high / g_low)
 
     chroma_dark = dark.max(axis=2) - dark.min(axis=2)
     chroma_clear = clear.max(axis=2) - clear.min(axis=2)
     want = (chroma_clear + eps) / ((chroma_dark + eps) * gain)
-    want = np.clip(want, 0.25, 4.0)
-    t_sat = (np.log(want) / np.log(4.0) + 1.0) / 2.0  # 0 to 1, 0.5 is neutral
+    want = np.clip(want, s_low, s_high)
+    t_sat = np.log(want / s_low) / np.log(s_high / s_low)
     return np.stack([t_gain, t_sat], axis=-1).astype(np.float32)
 
 
@@ -815,12 +1062,19 @@ def load_photos(folder, limit=400, want_clear=True):
     Anything already dark, flat or nearly greyscale is left out: a photo that
     is itself underexposed cannot be the answer sheet for underexposure.
     """
-    import cv2
-
     paths = []
     for pattern in ('*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG'):
         paths += glob.glob(os.path.join(folder, pattern))
     paths.sort()
+    return load_photo_paths(paths, limit=limit, want_clear=want_clear)
+
+
+def load_photo_paths(paths, limit=400, want_clear=True):
+    """The same loader, over a list of files picked out somewhere else -
+    which is how one family's harvested frames are loaded without the rest of
+    the corpus coming with them.
+    """
+    import cv2
 
     photos = []
     for path in paths[:limit * 3]:
@@ -868,7 +1122,7 @@ def make_samples(photos, count, rng, crop=128, report=None):
         dark, frames = degrade(clear, rng)
         stacks.append(frames)
         planes = feature_planes(dark)
-        answers = targets_for(dark, clear)
+        answers = targets_for(dark, clear, family=ACTIVE_BRAIN)
 
         # Take a scatter of pixels from this crop rather than all of them:
         # neighbouring pixels say almost the same thing, and a spread of crops
@@ -1003,12 +1257,17 @@ def make_read_only(path):
 
 
 def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
-          use_corpus=False):
+          use_corpus=False, preset=None):
     import numpy as np
 
     def say(line):
         if not quiet:
             print(line, flush=True)
+
+    # Everything below writes to MODEL_PATH/META_PATH, so the one thing that
+    # decides which brain this run trains is this call.
+    family = use_brain(preset)
+    label = f'brain {family}' if family else 'brain G'
 
     if os.path.isfile(MODEL_PATH) and not force:
         say(f'{MODEL_PATH} is already there. --force to retrain over it.')
@@ -1020,13 +1279,17 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
     trained_from = 'general photos'
 
     if use_corpus:
-        # This camera's own frames, harvested as the scripts ran.
-        photos = corpus_photos()
+        # This camera's own frames, harvested as the scripts ran - and, when a
+        # family was named, only the frames harvested under that family's own
+        # presets, so a night brain never sees a daylight frame.
+        photos = corpus_photos(family=family)
         used = os.path.join(CORPUS_DIR, 'clear')
-        pairs = corpus_pairs()
-        trained_from = 'this camera'
-        say(f'brain G: training on THIS CAMERA - {len(photos)} well-exposed '
-            f'frames and {len(pairs)} real dark/clear pairs from {CORPUS_DIR}')
+        pairs = corpus_pairs(family=family)
+        trained_from = ('this camera, ' + '/'.join(BRAIN_PRESETS[family])
+                        if family else 'this camera')
+        say(f'{label}: training on THIS CAMERA - {len(photos)} well-exposed '
+            f'frames and {len(pairs)} real dark/clear pairs from {CORPUS_DIR}'
+            + (f' under the {family} presets' if family else ''))
     else:
         folders = [photo_folder] if photo_folder else list(PHOTO_GUESSES)
         for folder in folders:
@@ -1130,13 +1393,20 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
     model.save(MODEL_PATH)
 
     meta = {
-        'brain': 'brain_g_night',
+        'brain': f'brain_{family}' if family else 'brain_g_night',
+        'brain_family': family,
+        'brain_presets': list(BRAIN_PRESETS[family]) if family else None,
         'feature_count': BRAIN_G_FEATURES,
         'foundation_units': unit_names(),
         'foundation_frozen': True,
         'architecture': '12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2',
         'outputs': ['log_gain_0_1', 'saturation_0_1_neutral_at_0.5'],
         'gain_max': GAIN_MAX,
+        # The range this brain's outputs decode into, and the rest of what it
+        # is allowed to do. webcam_enhance reads these back rather than
+        # assuming, so a brain always decodes against the range it was
+        # trained against even if the mandate here changes later.
+        'mandate': brain_mandate(family),
         'pretrain_samples': samples,
         'pretrain_cap': PRETRAIN_CAP,
         'epochs_run': epochs_run,
@@ -1153,7 +1423,7 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         'evaluation': scored,
         'trained_from': trained_from,
         'real_pairs': pair_note,
-        'corpus': corpus_state() if use_corpus else None,
+        'corpus': corpus_state(family) if use_corpus else None,
     }
     with open(META_PATH, 'w', encoding='utf-8') as handle:
         json.dump(meta, handle, indent=2)
@@ -1203,7 +1473,7 @@ def delete_brain(folder):
     return (True, f'deleted {", ".join(gone)} from {folder}')
 
 
-def reset_and_retrain(quiet=False, report=None):
+def reset_and_retrain(quiet=False, report=None, preset=None):
     """Throw the current brain away and train a fresh one from the harvest.
 
     This is the button in the window, and it exists because a trained model can
@@ -1236,21 +1506,32 @@ def reset_and_retrain(quiet=False, report=None):
     # correction working if there turns out not to be enough harvested to
     # train on. self_train_if_ready retires it in the usual way once the new
     # brain is shown to be better.
+    # Which brains to throw away: the one for the named preset, or all five
+    # when nothing is named, which is what the button in the window does.
+    families = ([brain_family(preset)] if preset is not None
+                else list(BRAIN_FAMILIES) + [None])
     notes = []
-    done, note = delete_brain(MODEL_DIR)
-    if done:
-        notes.append(note)
-        say(note)
-    else:
+    for family in families:
+        done, note = delete_brain(brain_dir_for(family))
+        if done:
+            label = f'brain {family}' if family else 'brain G'
+            notes.append(f'{label}: {note}')
+            say(f'{label}: {note}')
+    if not notes:
         say('brain G: there was no brain trained on this camera to delete')
 
     # Let it train again right away rather than waiting out the 24 hour gap.
     index = read_index()
     index['last_trained'] = 0
+    stamps = index.get('last_trained_by_brain') or {}
+    for family in families:
+        stamps.pop(family, None)
+    index['last_trained_by_brain'] = stamps
     write_index(index)
 
-    state = corpus_state()
-    ready, why = ready_to_train(state)
+    retrain_for = brain_family(preset) if preset is not None else None
+    state = corpus_state(retrain_for)
+    ready, why = ready_to_train(state, family=retrain_for)
     if not ready:
         shipped = os.path.isfile(os.path.join(SHIPPED_DIR, 'model.keras'))
         line = ('brain G: deleted. Not enough harvested to train a new one yet '
@@ -1263,15 +1544,29 @@ def reset_and_retrain(quiet=False, report=None):
         say(line)
         return (False, line)
 
-    say('brain G: training a fresh brain on this camera...')
-    did, line = self_train_if_ready(force=True, quiet=quiet)
+    if preset is not None:
+        say(f'brain {retrain_for}: training a fresh brain on this camera...')
+        did, line = self_train_if_ready(force=True, quiet=quiet,
+                                        preset=retrain_for)
+    else:
+        # Every family that has enough harvested under its own presets gets a
+        # fresh brain; the others wait for the harvest and run analytic in the
+        # meantime, which is a real state rather than a failure.
+        did, lines = False, []
+        for family in BRAIN_FAMILIES:
+            trained, text = self_train_if_ready(force=True, quiet=quiet,
+                                                preset=family)
+            did = did or trained
+            lines.append(text)
+            say(text)
+        line = ' | '.join(lines)
     if notes:
         line = '; '.join(notes) + '. ' + line
     say(line)
     return (did, line)
 
 
-def self_train_if_ready(force=False, quiet=False):
+def self_train_if_ready(force=False, quiet=False, preset=None):
     """Retrain on this camera's own frames, and retire the shipped brain.
 
     This is what the light meter calls. It does nothing at all until the
@@ -1290,22 +1585,29 @@ def self_train_if_ready(force=False, quiet=False):
 
     Returns (did_train, line).
     """
-    state = corpus_state()
-    ready, why = ready_to_train(state)
+    # Which brain this run is for. With nothing passed it is the preset in
+    # force, which is what the light meter wants: the brain being used right
+    # now is the one worth retraining on the frames coming in right now.
+    family = brain_family(preset) if preset is not None else brain_family()
+    label = f'brain {family}' if family else 'brain G'
+
+    state = corpus_state(family)
+    ready, why = ready_to_train(state, family=family)
     if not ready:
-        return (False, f'brain G: not retraining yet - {why}')
+        return (False, f'{label}: not retraining yet - {why}')
 
     index = read_index()
-    last = index.get('last_trained', 0)
+    stamps = index.get('last_trained_by_brain') or {}
+    last = stamps.get(family, 0) if family else index.get('last_trained', 0)
     if last and not force and time.time() - last < RETRAIN_EVERY:
         hours = (RETRAIN_EVERY - (time.time() - last)) / 3600.0
-        return (False, f'brain G: trained on this camera already, next retrain '
+        return (False, f'{label}: trained on this camera already, next retrain '
                        f'in {hours:.1f}h ({state["clear_frames"]} frames banked)')
 
     had_shipped = os.path.isfile(os.path.join(SHIPPED_DIR, 'model.keras'))
-    outcome = train(force=True, quiet=quiet, use_corpus=True)
+    outcome = train(force=True, quiet=quiet, use_corpus=True, preset=family)
     if outcome != 0 or not train.last:
-        return (False, 'brain G: training on this camera did not complete')
+        return (False, f'{label}: training on this camera did not complete')
 
     details = train.last
     new_meta = details['meta']
@@ -1325,11 +1627,16 @@ def self_train_if_ready(force=False, quiet=False):
             shipped_score = None
 
     index = read_index()
-    index['last_trained'] = int(time.time())
+    now = int(time.time())
+    index['last_trained'] = now
+    if family:
+        stamps = index.get('last_trained_by_brain') or {}
+        stamps[family] = now
+        index['last_trained_by_brain'] = stamps
     index['trainings'] = index.get('trainings', 0) + 1
     write_index(index)
 
-    line = (f'brain G: retrained on this camera - {state["clear_frames"]} '
+    line = (f'{label}: retrained on this camera - {state["clear_frames"]} '
             f'well-exposed frames, {state["real_pairs"]} real pairs, '
             f'{state["bucket_count"]} preset/light combinations')
     if isinstance(new_score, (int, float)):
@@ -1395,7 +1702,18 @@ def main():
                              'retire the shipped brain')
     parser.add_argument('--harvest', metavar='FRAME',
                         help='consider one still for the training set')
-    parser.add_argument('--preset', help='the preset in force, for --harvest')
+    parser.add_argument('--preset',
+                        help='which brain to work on: a preset name (night, '
+                             'night_mono, golden_am, day, bright_sun, '
+                             'golden_pm) or a family name (night, golden_am, '
+                             'day, bright_sun, golden_pm). Used by --harvest '
+                             'to file the '
+                             'frame, and by training to pick the brain. With '
+                             'nothing passed, training uses the preset in '
+                             'force.')
+    parser.add_argument('--all-presets', action='store_true',
+                        help='train or retrain one brain per preset family, '
+                             "each on only that family's harvested frames")
     parser.add_argument('--gain-fraction', type=float,
                         help='0 to 1, how hard the camera is working, for --harvest')
     parser.add_argument('--corpus-state', action='store_true',
@@ -1414,6 +1732,17 @@ def main():
               f'{state["hours_covered"]}h covered, in {state["folder"]}')
         print('presets seen: ' + (', '.join(state['presets']) or 'none'))
         print(('ready to train: ' if ready else 'not ready: ') + why)
+        # And the same again per brain, which is what actually decides whether
+        # each specialised brain can train.
+        for family in BRAIN_FAMILIES:
+            one = corpus_state(family)
+            ok, note = ready_to_train(one, family=family)
+            trained = os.path.isfile(os.path.join(brain_dir_for(family),
+                                                  'model.keras'))
+            print(f'  brain {family}: {one["clear_frames"]} clear, '
+                  f'{one["real_pairs"]} pairs, {one["bucket_count"]} buckets, '
+                  f'{"trained" if trained else "no model yet"} - '
+                  + ('ready' if ok else note))
         return 0
 
     if args.harvest:
@@ -1423,18 +1752,43 @@ def main():
         return 0
 
     if args.reset_retrain:
-        did, line = reset_and_retrain(quiet=args.quiet)
+        did, line = reset_and_retrain(quiet=args.quiet, preset=args.preset)
         if args.quiet:
             print(line)
         return 0 if did else 1
 
     if args.self_train:
-        did, line = self_train_if_ready(force=args.force, quiet=args.quiet)
+        if args.all_presets:
+            # One brain per family, each on its own lighting regime only.
+            any_done = False
+            for family in BRAIN_FAMILIES:
+                done, line = self_train_if_ready(force=args.force,
+                                                 quiet=args.quiet,
+                                                 preset=family)
+                any_done = any_done or done
+                print(line)
+            return 0 if any_done else 1
+        did, line = self_train_if_ready(force=args.force, quiet=args.quiet,
+                                        preset=args.preset)
         print(line)
         return 0 if did else 1
 
+    if args.all_presets:
+        # Pretraining one brain per family off general photos: same material,
+        # four models, so each preset has something of its own to load before
+        # the harvest has filled up.
+        worst = 0
+        for family in BRAIN_FAMILIES:
+            print(f'=== brain {family} ===')
+            worst = max(worst, train(photo_folder=args.photos,
+                                     force=args.force,
+                                     samples=min(args.samples, PRETRAIN_CAP),
+                                     quiet=args.quiet, preset=family))
+        return worst
+
     return train(photo_folder=args.photos, force=args.force,
-                 samples=min(args.samples, PRETRAIN_CAP), quiet=args.quiet)
+                 samples=min(args.samples, PRETRAIN_CAP), quiet=args.quiet,
+                 preset=args.preset)
 
 
 if __name__ == '__main__':

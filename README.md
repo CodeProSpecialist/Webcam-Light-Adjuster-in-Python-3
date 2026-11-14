@@ -467,6 +467,89 @@ python3 train_webcam_brain.py --photos ~/Pictures/clear-photos
 python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --force
 ```
 
+### One brain per lighting preset
+
+A single brain harvested across the whole day sees bright daylight frames and
+dark night frames with the same well-exposed targets, and the cheapest way for
+it to cut its error is to learn a gain below one on frames that are already
+bright. That is what darkened the picture in daylight. So there is now one
+specialised brain per lighting regime - five of them, since the only presets
+that share one are the two night presets - and a night-trained brain is never
+asked about a bright frame:
+
+| brain | presets it is trained on | folder |
+| --- | --- | --- |
+| `night` | `night`, `night_mono` | `~/.webcam-models/brain_night/` |
+| `golden_am` | `golden_am` | `~/.webcam-models/brain_golden_am/` |
+| `day` | `day` | `~/.webcam-models/brain_day/` |
+| `bright_sun` | `bright_sun` | `~/.webcam-models/brain_bright_sun/` |
+| `golden_pm` | `golden_pm` | `~/.webcam-models/brain_golden_pm/` |
+
+### What each brain is allowed to do
+
+Each brain's outputs are decoded into a range of its own, so the mandate is
+arithmetic rather than advice - a brain physically cannot ask for a correction
+outside its range, however it was trained. The same range clips the training
+targets, so it is never shown an answer it would not be allowed to give. It is
+recorded in each model's `meta.json`, so a brain always decodes against the
+range it was trained against.
+
+| brain | gain range | what it does |
+| --- | --- | --- |
+| `night` | 1.0 - 12.0 | brightens only, and as hard as the sensor allows. Most local contrast, hardest denoise, and an unsharp pass after it to put back the edges the grain and the denoise took. Never darkens. |
+| `golden_am` | 1.0 - 5.0 | sunrise. Brightens only; the dim-light part of the lift falls away as the light climbs. |
+| `day` | 1.0 - 12.0 | unchanged - exactly the behaviour the daylight pictures already had. No dim lift, no extra contrast, no sharpening, no tint. |
+| `bright_sun` | 0.7 - 1.0 | direct sun, the one brain that goes the other way: it takes the level **down** by up to about a third, or declines to change it, and cools the colour slightly - a little more blue, a little less red. |
+| `golden_pm` | 1.0 - 6.0 | sunset. Brightens only, and the dimmer the frame gets the more lift it is allowed, up to a dusk ceiling well above daylight's. |
+
+The dim-light lift for night and the two golden hours comes off the frame's own
+average brightness rather than off the clock: at or above mid grey it adds
+nothing, and the dimmer the frame the more it adds, up to half again. That is
+what tracks sunrise climbing and sunset dropping without anything having to
+know the time.
+
+Local contrast, denoise strength, sharpening and the tint are per brain in the
+same table - `BRAIN_MANDATE` in `train_webcam_brain.py`, which is the one place
+to change any of this.
+
+The preset in force is read from `~/.webcam-last-preset`, which is written
+whenever a preset is applied, and `webcam_enhance.py` loads the brain that
+matches it. **When a preset has no brain of its own yet, the analytic lift
+runs instead** - the old all-day brain is deliberately not used as a fallback,
+because running it on the wrong kind of light is the original bug. Models are
+cached per preset, so a preset change picks up that preset's brain on the next
+frame.
+
+The harvest already files every frame under the preset that produced it, and
+each brain is trained only on its own presets' frames. Twelve well-exposed
+frames across two preset/light combinations is enough for one brain, against
+twenty-four across three for the old all-day one, because a specialised brain
+has far less to learn.
+
+```
+# one brain per preset, each on its own harvested frames
+python3 train_webcam_brain.py --self-train --all-presets
+
+# just the one for the light that is on right now
+python3 train_webcam_brain.py --self-train
+
+# a named one, whatever the camera is doing
+python3 train_webcam_brain.py --self-train --preset night
+
+# pretrain all five off general photos, before the harvest has filled up
+python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --all-presets
+
+# where each one stands
+python3 train_webcam_brain.py --corpus-state
+```
+
+The light meter retrains the brain for the preset in force, so each brain is
+retrained while its own light is what the camera is seeing. The
+delete-and-retrain button deletes all five and trains every family that has
+enough harvested; `--reset-retrain --preset day` does one of them. The brain
+that shipped with the repository is kept until all five families have a brain
+of their own, so nothing is thrown away while something still depends on it.
+
 ## Finding cars and people
 
 ![Cars and people found in a night frame](docs/finding-cars-and-people.png)
