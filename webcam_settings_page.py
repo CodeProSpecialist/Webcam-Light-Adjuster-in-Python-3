@@ -90,6 +90,13 @@ try:
 except ImportError:                                               # noqa: BLE001
     train_webcam_brain = None
 
+# The one dark skin every page of the window wears. Optional, because this
+# page has always been able to run on its own with nothing beside it.
+try:
+    import webcam_theme
+except ImportError:                                               # noqa: BLE001
+    webcam_theme = None
+
 # Off and on for the light on the front of the camera, for the cameras that
 # let software near it.
 try:
@@ -1053,15 +1060,18 @@ class Window:
     # Dark, like the terminal above it, because this block sits under the
     # terminal and a white slab between two dark ones is what makes a page
     # look assembled rather than designed.
-    SUITE_BG = '#101820'
-    SUITE_CARD = '#16212b'
-    SUITE_TEXT = '#cfd8dc'
-    SUITE_DIM = '#8c9aa5'
+    # Taken from the window's own skin when it is there, so the cards and the
+    # page are the same colours by construction rather than by coincidence.
+    SUITE_BG = getattr(webcam_theme, 'BG', '#0d1117')
+    SUITE_CARD = getattr(webcam_theme, 'PANEL', '#141d26')
+    SUITE_EDGE = getattr(webcam_theme, 'EDGE', '#1f2a35')
+    SUITE_TEXT = getattr(webcam_theme, 'TEXT', '#c9d4de')
+    SUITE_DIM = getattr(webcam_theme, 'DIM', '#8b9bab')
     SUITE_STATE = {
-        'ACTIVE': '#4ade80',        # running the correction right now
-        'TRAINED': '#67b7f7',       # on disk, ready, not the live one
-        'PRETRAINED': '#ffd166',    # built from simulated light only
-        'MISSING': '#ff8c8c',       # nothing on disk for this preset
+        'ACTIVE': getattr(webcam_theme, 'GOOD', '#4ade80'),
+        'TRAINED': getattr(webcam_theme, 'LINK', '#67b7f7'),
+        'PRETRAINED': getattr(webcam_theme, 'WARN', '#ffd166'),
+        'MISSING': getattr(webcam_theme, 'BAD', '#ff8c8c'),
     }
 
     def build_brain_suite(self, parent):
@@ -1103,7 +1113,7 @@ class Window:
 
         for index, (family, title) in enumerate(self.SUITE_FAMILIES):
             card = tk.Frame(grid, bg=self.SUITE_CARD, highlightthickness=1,
-                            highlightbackground='#24323d')
+                            highlightbackground=self.SUITE_EDGE)
             card.grid(row=index // self.SUITE_COLUMNS,
                       column=index % self.SUITE_COLUMNS,
                       sticky='nsew', padx=3, pady=3)
@@ -2605,7 +2615,14 @@ class Window:
 
 def main():
     root = tk.Tk()
-    Window(root)
+    # Run on its own, this page gets the same skin the whole window wears,
+    # so the two ways of opening it look like the same program.
+    if webcam_theme:
+        webcam_theme.apply(root)
+    window = Window(root)
+    if webcam_theme:
+        webcam_theme.recolour(root)
+    del window
     root.mainloop()
 
 

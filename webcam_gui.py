@@ -62,6 +62,16 @@ import webcam_record                                              # noqa: E402
 import webcam_archive                                             # noqa: E402
 
 try:
+    import webcam_theme                                           # noqa: E402
+except ImportError:                                               # noqa: BLE001
+    webcam_theme = None
+
+# What a picture sits on. The same near-black the rest of the window uses, so
+# a canvas waiting for its first frame is not a different shade of dark from
+# the page it is packed into.
+VIDEO_BG = getattr(webcam_theme, 'BG', '#0d1117')
+
+try:
     from webcam_errors import log_error
 except Exception:                                                 # noqa: BLE001
     def log_error(text):
@@ -370,7 +380,7 @@ class LivePage(tk.Frame):
                       padx=4, pady=0,
                       command=lambda n=number: self.pop_out(n)
                       ).pack(side='right', padx=4)
-            canvas = tk.Canvas(holder, bg='#101014', width=width,
+            canvas = tk.Canvas(holder, bg=VIDEO_BG, width=width,
                                height=height, highlightthickness=0)
             canvas.pack(side='top', fill='both', expand=True)
             item = canvas.create_image(width // 2, height // 2,
@@ -452,7 +462,7 @@ class LivePage(tk.Frame):
 
         window = tk.Toplevel(self.winfo_toplevel())
         window.title(f'Camera {index} - live video')
-        window.configure(bg='#101014')
+        window.configure(bg=VIDEO_BG)
         window.geometry('640x400')
         window.minsize(240, 180)
         try:
@@ -460,7 +470,7 @@ class LivePage(tk.Frame):
         except tk.TclError:
             pass
 
-        canvas = tk.Canvas(window, bg='#101014', highlightthickness=0)
+        canvas = tk.Canvas(window, bg=VIDEO_BG, highlightthickness=0)
         canvas.pack(side='top', fill='both', expand=True)
         item = canvas.create_image(320, 180, anchor='center')
         text = canvas.create_text(320, 180, fill='#99aabb', width=560,
@@ -910,7 +920,7 @@ class ArchivePage(tk.Frame):
 
         right = tk.Frame(split)
         right.pack(side='left', fill='both', expand=True, padx=(8, 0))
-        self.video = tk.Canvas(right, bg='#101014', width=640, height=360,
+        self.video = tk.Canvas(right, bg=VIDEO_BG, width=640, height=360,
                                highlightthickness=0)
         self.video.pack(side='top')
         self.video_item = self.video.create_image(320, 180, anchor='center')
@@ -1383,6 +1393,12 @@ class App:
                 child.destroy()
             self.settings = webcam_settings_page.Window(self.root,
                                               container=self.settings_host)
+            # The settings page is the oldest code in the window and sets a
+            # few colours of its own, so it gets a walk over as well as the
+            # option database. Its terminals and the brain cards are already
+            # this palette and are left as they are.
+            if webcam_theme:
+                webcam_theme.recolour(self.settings_host)
         except Exception as problem:                              # noqa: BLE001
             log_error(f'settings page: {problem}')
             for child in self.settings_host.winfo_children():
@@ -1408,6 +1424,11 @@ class App:
 def main():
     webcam_record.ensure_dirs()
     root = tk.Tk()
+    # The skin goes on before a single page is built, so every widget made
+    # from here on comes out of the option database already dark rather than
+    # being repainted afterwards.
+    if webcam_theme:
+        webcam_theme.apply(root)
     App(root)
     root.mainloop()
 
