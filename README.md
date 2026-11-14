@@ -467,6 +467,13 @@ python3 train_webcam_brain.py --photos ~/Pictures/clear-photos
 python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --force
 ```
 
+That trains **all five brains**, one per lighting preset, from the same photos -
+what differs between them is the range each one's answers are clipped and
+encoded into. So the night brain comes out of it knowing only how to brighten
+and the bright sun brain only how to pull a level down, before either has seen
+a frame of your camera. The harvest then specialises each one further on its own
+presets' frames. `--preset day` trains just one of them.
+
 ### One brain per lighting preset
 
 A single brain harvested across the whole day sees bright daylight frames and
@@ -567,8 +574,9 @@ python3 train_webcam_brain.py --self-train
 # a named one, whatever the camera is doing
 python3 train_webcam_brain.py --self-train --preset night
 
-# pretrain all five off general photos, before the harvest has filled up
-python3 train_webcam_brain.py --photos ~/Pictures/clear-photos --all-presets
+# pretrain all five off clear photos - what a first run does. No --preset
+# means all of them; add --preset day for just one
+python3 train_webcam_brain.py --photos ~/Pictures/clear-photos
 
 # where each one stands
 python3 train_webcam_brain.py --corpus-state

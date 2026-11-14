@@ -64,10 +64,9 @@ afternoon, copy those out somewhere, and train on them.
 With no --photos it looks in a few likely folders, including the snapshot
 folder, and takes whatever is clear enough to be worth training on.
 
-With --preset (or --all-presets) the model is written to
-~/.webcam-models/brain_<family>/ - one brain per lighting regime, so a
-night-trained brain is never applied to a bright daylight frame. Without a
-preset the model is written to ~/.webcam-models/brain_g_night_model/ and then made
+A bare pretrain run trains all five brains, one per lighting regime, each to
+~/.webcam-models/brain_<family>/, so a night-trained brain is never applied to
+a bright daylight frame. --preset trains just one of them. Each model is made
 read-only, because inference must never write to it. --force is the only way
 to retrain over one that is already there.
 """
@@ -1508,6 +1507,51 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
     return 0
 
 
+def pretrain_all(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES,
+                 quiet=False, report=None, families=None):
+    """Pretrain one brain per lighting preset from the same clear photos.
+
+    This is the first-run path. Five brains come out of it, one per lighting
+    regime, each written to its own folder - which is what the corrector looks
+    for once a preset is applied. Training a single brain here instead would
+    write the old all-day folder, and that folder is not read at all once a
+    preset is in force, so the work would be thrown away.
+
+    The five are trained from the SAME photos; what differs is the range each
+    one's answers are clipped and encoded into, which is its mandate. So the
+    night brain comes out of this knowing only how to brighten, and the bright
+    sun brain only how to pull a level down - before either has seen a single
+    frame of this camera. The harvest then specialises them further, each on
+    its own presets' frames.
+
+    Returns (how_many_trained, lines).
+    """
+    def say(line):
+        if report:
+            report(line)
+        elif not quiet:
+            print(line, flush=True)
+
+    trained, lines = 0, []
+    for family in (families or BRAIN_FAMILIES):
+        say(f'=== brain {family}: {BRAIN_MANDATE[family]["note"]}')
+        try:
+            outcome = train(photo_folder=photo_folder, force=force,
+                            samples=samples, quiet=quiet, preset=family)
+        except Exception as problem:                          # noqa: BLE001
+            line = f'brain {family}: training failed - {problem}'
+            lines.append(line)
+            say(line)
+            continue
+        if outcome == 0:
+            trained += 1
+            lines.append(f'brain {family}: trained')
+        else:
+            lines.append(f'brain {family}: not trained')
+    say(f'pretrained {trained} of {len(families or BRAIN_FAMILIES)} brains')
+    return (trained, lines)
+
+
 def delete_brain(folder):
     """Delete a brain folder. Returns (deleted, note)."""
     model = os.path.join(folder, 'model.keras')
@@ -1788,8 +1832,10 @@ def main():
                              'nothing passed, training uses the preset in '
                              'force.')
     parser.add_argument('--all-presets', action='store_true',
-                        help='train or retrain one brain per preset family, '
-                             "each on only that family's harvested frames")
+                        help='every brain rather than one: with --self-train, '
+                             "retrain each on its own harvested frames; with "
+                             '--reset-retrain, delete all five. Pretraining '
+                             'from photos does all five by default already')
     parser.add_argument('--gain-fraction', type=float,
                         help='0 to 1, how hard the camera is working, for --harvest')
     parser.add_argument('--corpus-state', action='store_true',
@@ -1852,22 +1898,20 @@ def main():
         print(line)
         return 0 if did else 1
 
-    if args.all_presets:
-        # Pretraining one brain per family off general photos: same material,
-        # four models, so each preset has something of its own to load before
-        # the harvest has filled up.
-        worst = 0
-        for family in BRAIN_FAMILIES:
-            print(f'=== brain {family} ===')
-            worst = max(worst, train(photo_folder=args.photos,
-                                     force=args.force,
-                                     samples=min(args.samples, PRETRAIN_CAP),
-                                     quiet=args.quiet, preset=family))
-        return worst
+    if args.preset:
+        # One named brain.
+        return train(photo_folder=args.photos, force=args.force,
+                     samples=min(args.samples, PRETRAIN_CAP),
+                     quiet=args.quiet, preset=args.preset)
 
-    return train(photo_folder=args.photos, force=args.force,
-                 samples=min(args.samples, PRETRAIN_CAP), quiet=args.quiet,
-                 preset=args.preset)
+    # No preset named: pretrain all five, which is what a first run wants.
+    # Training one brain here would write the old all-day folder, and that
+    # folder is not read once a preset is in force, so the work would be
+    # thrown away. --preset is how to train just one.
+    trained, _lines = pretrain_all(photo_folder=args.photos, force=args.force,
+                                   samples=min(args.samples, PRETRAIN_CAP),
+                                   quiet=args.quiet)
+    return 0 if trained else 1
 
 
 if __name__ == '__main__':

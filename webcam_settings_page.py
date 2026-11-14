@@ -1098,9 +1098,15 @@ class Window:
                 for label, path in sources:
                     self.brain_lines.put(f'training from {label}: {path}')
                     try:
-                        train_webcam_brain.train(photo_folder=path, force=True,
-                                                 quiet=True)
-                        self.brain_lines.put(f'trained from {label}')
+                        # All five brains, one per lighting preset. Training a
+                        # single brain here would write the old all-day folder,
+                        # which is not read once a preset is in force - so the
+                        # work would be thrown away.
+                        trained, _lines = train_webcam_brain.pretrain_all(
+                            photo_folder=path, force=True, quiet=True,
+                            report=self.brain_lines.put)
+                        self.brain_lines.put(
+                            f'trained {trained} brains from {label}')
                     except Exception as problem:              # noqa: BLE001
                         self.brain_lines.put(
                             f'could not train from {label}: {problem}')
