@@ -230,19 +230,63 @@ _UNSET = object()
 
 
 def active_family():
-    """The brain family the preset in force belongs to, or None.
+    """The one brain that is active right now, or None.
 
-    night and night_mono share one brain, day and bright_sun share another,
-    and the two golden hours have one each - see BRAIN_PRESETS in
-    train_webcam_brain.py.
+    Read fresh on every call, from the file the preset engine writes at the
+    moment it applies a preset. That is what makes the switch instant: applying
+    night_mono makes the night brain the active one on the very next frame, and
+    applying bright_sun makes the bright_sun brain the active one - each preset
+    maps to exactly one brain and no other brain is consulted.
+
+    Six presets, five brains: night and night_mono are the same light with and
+    without colour and share one brain; the other four have one each. See
+    BRAIN_PRESETS in train_webcam_brain.py.
     """
     module = _brain_module()
-    if not module or not hasattr(module, 'brain_family'):
+    if not module:
+        return None
+    if hasattr(module, 'active_brain'):
+        try:
+            family, _preset, _when = module.active_brain()
+            return family
+        except Exception:                                     # noqa: BLE001
+            pass
+    if not hasattr(module, 'brain_family'):
         return None
     try:
         return module.brain_family()
     except Exception:                                         # noqa: BLE001
         return None
+
+
+def activate_brain(family):
+    """Make this the only brain in memory, dropping every other one.
+
+    A preset change does not merely stop using the other brains, it unloads
+    them: the models are dropped from the cache and, when one has to be loaded
+    fresh afterwards, TensorFlow's graph is cleared with it. So after a switch
+    there is exactly one brain resident - the one for the preset that is on -
+    and the memory the others held goes back.
+
+    Returns True when something was actually dropped.
+    """
+    stale = [key for key in _brain.cache if key != family]
+    if not stale:
+        return False
+    for key in stale:
+        _brain.cache.pop(key, None)
+        _brain.reasons.pop(key, None)
+    # Only safe when the brain now wanted is not already loaded: clearing the
+    # session would invalidate it along with the ones being dropped.
+    if family not in _brain.cache:
+        try:
+            import sys as _sys                                # noqa: PLC0415
+            keras = getattr(_sys.modules.get('tensorflow'), 'keras', None)
+            if keras is not None:
+                keras.backend.clear_session()
+        except Exception:                                     # noqa: BLE001
+            pass
+    return True
 
 
 def brain_mandate(family=None, meta=None):
@@ -308,9 +352,29 @@ def brain_dirs(family=None):
     if family:
         found.append(os.path.join(root, f'brain_{family}'))
         found.append(os.path.join(here, f'brain_{family}'))
-    else:
-        found.append(os.path.join(root, 'brain_g_night_model'))
-        found.append(os.path.join(here, 'brain_g_night_model'))
+        return found
+
+    # No family. Two different situations, and only one of them may read the
+    # old all-day brain:
+    #
+    #   nothing applied yet - no preset has been recorded at all, so there is
+    #       nothing to match against and the old folder is no worse than it
+    #       ever was.
+    #   a preset with no brain of its own - cloudy, defaults, anything added
+    #       later. Here the old brain is exactly the wrong answer: it was
+    #       trained across mixed light and running it on light nobody trained
+    #       for is the original bug. The analytic correct runs instead.
+    module = _brain_module()
+    recorded = ''
+    if module is not None and hasattr(module, 'active_brain'):
+        try:
+            _family, recorded, _when = module.active_brain()
+        except Exception:                                     # noqa: BLE001
+            recorded = ''
+    if recorded:
+        return found
+    found.append(os.path.join(root, 'brain_g_night_model'))
+    found.append(os.path.join(here, 'brain_g_night_model'))
     return found
 
 
@@ -337,6 +401,11 @@ def _brain(family=_UNSET):
     """
     if family is _UNSET:
         family = active_family()
+    # The preset changed since the last frame: the brain for the new preset
+    # becomes the active one and every other brain is dropped here, before
+    # anything is loaded or used.
+    if family != _brain.family:
+        activate_brain(family)
     if family in _brain.cache:
         _brain.family = family
         _brain.why = _brain.reasons.get(family, '')
@@ -345,6 +414,9 @@ def _brain(family=_UNSET):
     _brain.family = family
     _brain.why = ('no trained brain found'
                   + (f' for the {family} preset' if family else ''))
+    if not family and not brain_dirs(family):
+        _brain.why = ('this preset has no brain of its own - the analytic '
+                      'correct is doing the work')
     _brain.reasons[family] = _brain.why
 
     module = _brain_module()

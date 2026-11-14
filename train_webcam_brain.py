@@ -416,15 +416,65 @@ LAST_PRESET_FILE = os.environ.get(
     'WEBCAM_LAST_PRESET',
     os.path.join(os.path.expanduser('~'), '.webcam-last-preset'))
 
+# Which brain is active, written at the moment the preset is applied and read
+# by the corrector on every frame. One brain is active at a time and the rest
+# are not merely unused but dropped - see activate_brain in webcam_enhance.py.
+ACTIVE_BRAIN_FILE = os.environ.get(
+    'WEBCAM_ACTIVE_BRAIN',
+    os.path.join(os.path.expanduser('~'), '.webcam-active-brain'))
+
 
 def note_preset(name):
-    """Record the preset just applied. Called by the settings engine."""
+    """Record the preset just applied. Called by the settings engine.
+
+    Also writes the brain that preset belongs to, and the moment of the
+    change, into ACTIVE_BRAIN_FILE. That file is what makes the switch
+    instant: the corrector reads it on every frame, so the moment a preset is
+    applied the brain for that preset is the only one active and every other
+    one is dropped - no waiting for a retrain, a restart or the next harvest.
+    """
+    now = int(time.time())
+    ok = True
     try:
         with open(LAST_PRESET_FILE, 'w', encoding='utf-8') as handle:
-            handle.write(f'{name}\n{int(time.time())}\n')
-        return True
+            handle.write(f'{name}\n{now}\n')
     except OSError:
-        return False
+        ok = False
+    family = brain_family(name)
+    try:
+        with open(ACTIVE_BRAIN_FILE, 'w', encoding='utf-8') as handle:
+            handle.write(f'{family or ""}\n{name}\n{now}\n')
+    except OSError:
+        ok = False
+    return ok
+
+
+def active_brain():
+    """The brain that should be running right now, and nothing else.
+
+    Returns (family, preset, when) with family None when no preset has been
+    applied yet. Read from ACTIVE_BRAIN_FILE when it is there, because that
+    file is written at the moment of the change and carries the timestamp;
+    otherwise worked out from the preset file, so an install that applied its
+    preset before this existed still gets the right brain.
+    """
+    try:
+        with open(ACTIVE_BRAIN_FILE, encoding='utf-8') as handle:
+            family = handle.readline().strip()
+            preset = handle.readline().strip()
+            stamp = handle.readline().strip()
+        if preset:
+            # The family is re-derived rather than trusted, so editing the
+            # table is enough to move a preset from one brain to another
+            # without having to delete this file.
+            return (brain_family(preset), preset,
+                    int(stamp) if stamp.isdigit() else 0)
+        if family:
+            return (family if family in BRAIN_PRESETS else None, '', 0)
+    except (OSError, ValueError):
+        pass
+    preset = current_preset()
+    return (brain_family(preset), preset or '', 0)
 
 
 def current_preset():
