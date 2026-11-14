@@ -1026,7 +1026,218 @@ class Window:
             '<MouseWheel>',
             lambda e: (self.brain_text.yview_scroll(-3 if e.delta > 0 else 3, 'units'),
                        'break')[1])
+        self.build_brain_suite(frame)
         self.refresh_brain_info()
+
+    # ---- the suite: all five brains at a glance, under the terminal ----
+
+    #: The five brains, in the order the light goes round the day, with the
+    #: short word each tile is headed by. Fixed order on purpose: a tile that
+    #: moved about as presets fired would be unreadable at a glance, and the
+    #: point of this block is to be read at a glance.
+    SUITE_FAMILIES = (
+        ('golden_am', 'Golden AM'),
+        ('day', 'Day'),
+        ('bright_sun', 'Bright Sun'),
+        ('golden_pm', 'Golden PM'),
+        ('night', 'Night'),
+    )
+
+    SUITE_COLUMNS = 3
+
+    #: Which brain is live, as of the last redraw. Set by refresh_brain_suite
+    #: before it reads any card, and declared here so a card drawn before the
+    #: first refresh has something to compare against rather than raising.
+    suite_active_family = None
+
+    # Dark, like the terminal above it, because this block sits under the
+    # terminal and a white slab between two dark ones is what makes a page
+    # look assembled rather than designed.
+    SUITE_BG = '#101820'
+    SUITE_CARD = '#16212b'
+    SUITE_TEXT = '#cfd8dc'
+    SUITE_DIM = '#8c9aa5'
+    SUITE_STATE = {
+        'ACTIVE': '#4ade80',        # running the correction right now
+        'TRAINED': '#67b7f7',       # on disk, ready, not the live one
+        'PRETRAINED': '#ffd166',    # built from simulated light only
+        'MISSING': '#ff8c8c',       # nothing on disk for this preset
+    }
+
+    def build_brain_suite(self, parent):
+        """One card per brain, under the brain's text terminal.
+
+        The terminal above says everything about one brain - the live one.
+        That leaves the obvious question unanswered: what about the other
+        four. A brain that never trained, or trained on simulated light and
+        never saw this camera, does not announce itself; the picture just
+        comes out worse under that one preset and nothing on the page says
+        why. So every brain gets a card with the same three facts on it -
+        whether it exists, what it was built from, and how it scored against
+        a flat answer - and they sit side by side so the odd one out shows up
+        without having to be looked for.
+        """
+        wrap = tk.Frame(parent, bg=self.SUITE_BG, highlightthickness=0)
+        wrap.pack(fill='x', padx=4, pady=(4, 4))
+        self.brain_suite_wrap = wrap
+        self.brain_suite_cards = {}
+
+        head = tk.Frame(wrap, bg=self.SUITE_BG)
+        head.pack(fill='x', padx=6, pady=(6, 2))
+        tk.Label(head, text='BRAIN SUITE', bg=self.SUITE_BG, fg=self.SUITE_TEXT,
+                 font=('Helvetica', 9, 'bold')).pack(side='left')
+        self.brain_suite_count = tk.Label(head, text='', bg=self.SUITE_BG,
+                                          fg=self.SUITE_DIM,
+                                          font=('Helvetica', 8))
+        self.brain_suite_count.pack(side='right')
+        self.brain_suite_note = tk.Label(wrap, text='reading the brains...',
+                                         bg=self.SUITE_BG, fg=self.SUITE_DIM,
+                                         anchor='w', justify='left',
+                                         font=('Helvetica', 8), wraplength=620)
+        self.brain_suite_note.pack(fill='x', padx=6, pady=(0, 4))
+
+        grid = tk.Frame(wrap, bg=self.SUITE_BG)
+        grid.pack(fill='x', padx=4, pady=(0, 6))
+        for column in range(self.SUITE_COLUMNS):
+            grid.grid_columnconfigure(column, weight=1, uniform='brain')
+
+        for index, (family, title) in enumerate(self.SUITE_FAMILIES):
+            card = tk.Frame(grid, bg=self.SUITE_CARD, highlightthickness=1,
+                            highlightbackground='#24323d')
+            card.grid(row=index // self.SUITE_COLUMNS,
+                      column=index % self.SUITE_COLUMNS,
+                      sticky='nsew', padx=3, pady=3)
+            bar = tk.Frame(card, bg=self.SUITE_CARD)
+            bar.pack(fill='x', padx=6, pady=(5, 0))
+            tk.Label(bar, text=title, bg=self.SUITE_CARD, fg=self.SUITE_TEXT,
+                     font=('Helvetica', 9, 'bold')).pack(side='left')
+            state = tk.Label(bar, text='...', bg=self.SUITE_CARD,
+                             fg=self.SUITE_DIM, font=('Helvetica', 7, 'bold'))
+            state.pack(side='right')
+            body = tk.Label(card, text='', bg=self.SUITE_CARD,
+                            fg=self.SUITE_DIM, anchor='w', justify='left',
+                            font=('Monospace', 8))
+            body.pack(fill='x', padx=6, pady=(1, 6))
+            self.brain_suite_cards[family] = {'state': state, 'body': body}
+
+    def brain_suite_facts(self, family):
+        """(state, lines) for one brain, read off the disk every time.
+
+        Nothing here loads a model: the meta file beside it carries every
+        number the card shows, and loading five Keras models to draw a
+        summary would cost seconds and a lot of memory for facts that are
+        already written down.
+        """
+        import json                                            # noqa: PLC0415
+        lines = []
+        if not train_webcam_brain:
+            return ('MISSING', ['train_webcam_brain.py not found'])
+        # The same folders, in the same order, that the enhancement module
+        # would load this brain from - so a card says MISSING only when the
+        # correction would really fall back to the analytic lift, and a brain
+        # shipped beside the script counts as being there.
+        folders = []
+        if webcam_enhance:
+            try:
+                folders = list(webcam_enhance.brain_dirs(family))
+            except Exception:                                  # noqa: BLE001
+                folders = []
+        if not folders:
+            try:
+                folders = [train_webcam_brain.brain_dir_for(family)]
+            except Exception:                                  # noqa: BLE001
+                return ('MISSING', ['no folder for this brain'])
+        folder = None
+        for candidate in folders:
+            if os.path.exists(os.path.join(candidate, 'model.keras')):
+                folder = candidate
+                break
+        if folder is None:
+            return ('MISSING', ['no brain on disk yet',
+                                'the analytic correct runs instead'])
+        meta_path = os.path.join(folder, 'meta.json')
+        try:
+            with open(meta_path, encoding='utf-8') as handle:
+                meta = json.load(handle)
+        except Exception:                                      # noqa: BLE001
+            return ('TRAINED', ['model.keras is there, meta.json is not',
+                                'so there is nothing to report on it'])
+
+        # What it was built from. A brain that has only ever seen simulated
+        # light is worth telling apart from one trained on this camera: both
+        # load and both correct, and only one of them knows this scene.
+        source = str(meta.get('trained_from') or '')
+        simulated = 'simul' in source.lower() or 'synth' in source.lower()
+        state = 'PRETRAINED' if simulated else 'TRAINED'
+        if family == self.suite_active_family:
+            state = 'ACTIVE'
+
+        photos = meta.get('photos_trained_on')
+        samples = meta.get('pretrain_samples')
+        if samples:
+            cap = meta.get('pretrain_cap') or samples
+            lines.append(f'samples   {samples:,} / {cap:,}')
+        if photos:
+            lines.append(f'photos    {photos:,} trained, '
+                         f'{meta.get("photos_held_back", 0):,} held back')
+        loss = meta.get('val_loss')
+        flat = meta.get('flat_answer_val_loss')
+        if loss is not None and flat:
+            better = (flat - loss) / flat * 100.0
+            lines.append(f'val loss  {loss:.5f}  ({better:+.0f}% on flat)')
+        elif loss is not None:
+            lines.append(f'val loss  {loss:.5f}')
+        lines.append(f'trained   {meta.get("trained_at", "not recorded")}')
+        lines.append(f'built on  {source or "not recorded"}')
+
+        # And what this camera has harvested for it, which is what a retrain
+        # would use. A brain with no corpus behind it cannot be improved yet,
+        # however good its numbers look.
+        try:
+            corpus = train_webcam_brain.corpus_state(family)
+            lines.append(f'harvest   {corpus["clear_frames"]:,} clear, '
+                         f'{corpus["bucket_count"]} light buckets')
+        except Exception:                                      # noqa: BLE001
+            pass
+        return (state, lines)
+
+    def refresh_brain_suite(self):
+        """Redraw every card. Called wherever the brain details are."""
+        if not getattr(self, 'brain_suite_cards', None):
+            return
+        self.suite_active_family = None
+        if webcam_enhance:
+            try:
+                self.suite_active_family = webcam_enhance.active_family()
+            except Exception:                                  # noqa: BLE001
+                self.suite_active_family = None
+        ready = 0
+        for family, _title in self.SUITE_FAMILIES:
+            card = self.brain_suite_cards[family]
+            try:
+                state, lines = self.brain_suite_facts(family)
+            except Exception as problem:                       # noqa: BLE001
+                state, lines = ('MISSING', [f'could not read it: {problem}'])
+            if state != 'MISSING':
+                ready += 1
+            card['state'].configure(text=state,
+                                    fg=self.SUITE_STATE.get(state, self.SUITE_DIM))
+            card['body'].configure(text='\n'.join(lines))
+        total = len(self.SUITE_FAMILIES)
+        self.brain_suite_count.configure(text=f'{ready}/{total}')
+        if ready == total:
+            note = ('All five brains are on disk. The one marked ACTIVE is '
+                    'correcting the picture right now; the others wait for '
+                    'their preset.')
+        elif ready:
+            note = (f'{total - ready} of {total} brains are missing. Under '
+                    'those presets the analytic correct does the work, which '
+                    'is weaker but never wrong.')
+        else:
+            note = ('No brains on disk. The analytic correct is doing all of '
+                    'the work - train from the box above once the harvest is '
+                    'ready.')
+        self.brain_suite_note.configure(text=note)
 
     def train_summary(self):
         """One line saying what the two boxes add up to."""
@@ -1447,6 +1658,12 @@ class Window:
         self.brain_text.delete('1.0', 'end')
         self.brain_text.insert('end', text)
         self.brain_text.configure(state='disabled')
+        # The cards read the same disk the text above does, so they are
+        # redrawn together rather than on a timer of their own.
+        try:
+            self.refresh_brain_suite()
+        except Exception:                                      # noqa: BLE001
+            pass
 
     # ---- is it working, and what did it do to the picture ----
 
