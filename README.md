@@ -383,7 +383,29 @@ scheduler's terminal - a second or two that should not sit in front of the
 video.
 
 `python3 webcam_settings_page.py` still opens it on its own, exactly as it
-did when it was the whole program.
+did when it was the whole program - and with the same skin, so the two ways
+of opening it look like the same program.
+
+### One dark skin, on every page
+
+`webcam_theme.py` holds the window's colours in one place and every page asks
+for them by name. There is a reason beyond taste: this is a camera watched at
+night, and a window that is dark around the video but system grey everywhere
+else glares at exactly the hour it is being used. The palette is the one the
+terminal panes already had, so nothing that was dark has had to change to
+match.
+
+It goes on in two passes. The Tk option database and the ttk styles are set
+before a page is built, so every widget made afterwards - including the
+settings page, built minutes later when its tab is first opened - comes out
+dark without the page having to know about colours. Then a walk over the
+settings page fixes what it sets itself. Dark text colours are remapped rather
+than flattened: a near-black grey becomes the ordinary text colour and a dark
+coloured ink is brightened at the same hue, so a green ready line or a red
+failure keeps its meaning instead of all of them turning into the same grey.
+
+Some screenshots further down this file predate the skin and still show the
+window in system grey.
 
 ## The schedule and the presets
 
@@ -462,7 +484,27 @@ Two switches in the settings page, independent of each other:
 OpenCV does the foundational, rule-based half - reading the frames, CLAHE,
 filters. TensorFlow does the learnt half.
 
-![Brain G's tile: what it was trained on, when, and how it scored](docs/screenshot-brain-tile.png)
+![The brain tile: which brain is active, what it was trained on, when, and how it scored](docs/screenshot-brain-tile.png)
+
+The heading names no particular brain. There are five of them and which one is
+live changes with the preset, so the green line under it is the one place a
+brain is named: **active brain: night (brain_night)**, re-read every time the
+tile refreshes. That is the brain the delete button acts on.
+
+![The brain suite: one card per brain, with its state, what it was built from and how it scored](docs/brain-suite.png)
+
+Under the tile's terminal, one card per brain. The terminal above says
+everything about the live one, which leaves the other four unaccounted for -
+and a brain that never trained does not announce itself, the picture just comes
+out worse under that one preset. So each card carries the same facts: whether
+there is a brain on disk at all, what it was built from, how its validation
+loss compares with a flat "lift everything the same amount" answer, and what
+this camera has harvested for it.
+
+The badge is the state: **ACTIVE** for the brain correcting the picture right
+now, **TRAINED** for one built from this camera's own frames, **PRETRAINED**
+for one that has only ever seen simulated light, and **MISSING** when there is
+nothing to load and the analytic correct is doing that preset's work.
 
 ### Brain G
 
@@ -891,5 +933,17 @@ overwrite the files:
 | `docs/one-camera-live.png` | the Live video page with one camera |
 | `docs/archive-page.png` | the Archive page, mid-playback, with results listed |
 | `docs/archive-notice.png` | the notice window that **Open archive folder** opens |
+| `docs/screenshot-gui.png` | the settings page, scrolled to the camera controls |
+| `docs/screenshot-status-tile.png` | the status tile with its four frames filled in |
+| `docs/night-correction.png` | a night frame of your own scene, before and after |
+| `docs/finding-cars-and-people.png` | a night frame with a car or a person found in it |
+| `docs/lock-panel.png` | the lock panel with real detections in it |
 
 No markdown needs changing - the README references those paths already.
+
+The five in that second group are the ones that need a camera, footage or a
+brain trained on your scene, so they go stale whenever the window changes and
+can only be retaken on a working installation. `docs/screenshot-brain-tile.png`
+and `docs/brain-suite.png` do not: both are the real widgets drawn against the
+brains this repository ships, which is what a fresh clone shows before it has
+harvested anything of its own.
