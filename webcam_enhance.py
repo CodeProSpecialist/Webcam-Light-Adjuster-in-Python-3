@@ -475,6 +475,13 @@ def _brain(family=_UNSET):
         try:
             os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
             from tensorflow import keras                     # noqa: PLC0415
+            # Cap the VRAM and prove the card can run a convolution before
+            # a brain is put on it. Hides the GPU and carries on if not.
+            try:
+                import webcam_gpu                            # noqa: PLC0415
+                webcam_gpu.configure()
+            except ImportError:
+                pass
             model = keras.models.load_model(model_path, compile=False)
         except Exception as problem:                          # noqa: BLE001
             _brain.why = f'could not load the brain: {problem}'

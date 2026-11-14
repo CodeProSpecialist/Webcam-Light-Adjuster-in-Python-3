@@ -85,6 +85,25 @@ def _apt_command(packages):
     return sudo + ['apt-get', '-y', 'install'] + sorted(set(packages))
 
 
+def _advise_gpu():
+    """Mention the GPU TensorFlow install, once, on a terminal only.
+
+    Deliberately never installs: see the module docstring's third rule and
+    the note at the top of webcam_gpu. Headless runs stay silent - a cron
+    job has nobody to read advice.
+    """
+    if not _interactive():
+        return
+    try:
+        import webcam_gpu                                      # noqa: PLC0415
+    except ImportError:
+        return
+    try:
+        webcam_gpu.advise()
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
 def ensure(*modules):
     if os.environ.get('WEBCAM_NO_BOOTSTRAP'):
         return
@@ -104,6 +123,7 @@ def ensure(*modules):
     )
 
     if not missing and not missing_programs:
+        _advise_gpu()
         return
 
     # A missing program is installed here too, not merely reported. ffmpeg is

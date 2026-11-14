@@ -1354,6 +1354,13 @@ def _keras():
         except ImportError:
             pass
         raise
+    # Same GPU check the enhancer does. Idempotent, so whichever runs
+    # first decides and the other just gets the answer.
+    try:
+        import webcam_gpu                                      # noqa: PLC0415
+        webcam_gpu.configure()
+    except ImportError:
+        pass
     return keras
 
 
