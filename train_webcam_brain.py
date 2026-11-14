@@ -145,6 +145,11 @@ MIN_BUCKETS = 3
 # lighting regime, so it cannot cover three preset/light combinations and it
 # fills up more slowly - but it also has far less to learn, because every
 # frame it sees is the same kind of light.
+# How many simulated photographs one brain is pretrained from. Twenty-four
+# scenes, each cropped and degraded hundreds of different ways, is plenty -
+# the variety that matters comes from the degradation, not from the count.
+SIMULATED_PHOTOS = 24
+
 MIN_CLEAR_FRAMES_PRESET = 12
 MIN_BUCKETS_PRESET = 2
 
@@ -895,7 +900,275 @@ def retire_shipped_brain():
 # order it happens, which is what makes the pairs worth training on.
 # ---------------------------------------------------------------------------
 
-def degrade(clear, rng):
+def simulate_photo(family=None, rng=None, size=320):
+    """One simulated photograph: a well exposed frame of a scene that never
+    existed, built out of the things this camera actually looks at.
+
+    Why simulate photographs rather than feature rows: the twelve features are
+    spatial - three box blurs at widening radius, two local standard
+    deviations, a dilated glare plane - and none of those mean anything in a
+    row of independently sampled numbers. Built as a picture instead, they
+    come out of feature_planes exactly as they will at run time, and the
+    answer comes from targets_for against the clear original, so the brain is
+    trained by the same two functions that will be used on it.
+
+    What goes in: a sky gradient, a ground plane, a building edge, a car-sized
+    box, foliage texture, a lamp with its glare, and film grain. Crude as a
+    picture and that is fine - what matters is that it has the STRUCTURE the
+    features measure: flat regions, edges, texture at two scales, a bright
+    source with a halo, and shadow.
+    """
+    import cv2
+    import numpy as np
+
+    rng = rng or np.random.default_rng()
+    # How bright this scene is, in the light this brain is for.
+    level = {
+        'night': (0.30, 0.62),
+        'golden_am': (0.38, 0.70),
+        'day': (0.45, 0.78),
+        'bright_sun': (0.55, 0.85),
+        'golden_pm': (0.38, 0.70),
+    }.get(family, (0.35, 0.80))
+    base = float(rng.uniform(*level))
+
+    image = np.zeros((size, size, 3), dtype=np.float32)
+    rows = np.linspace(0, 1, size, dtype=np.float32)[:, None]
+
+    # Sky, brighter at the top, with the warm cast the golden hours have.
+    horizon = float(rng.uniform(0.25, 0.6))
+    sky = np.clip(base * (1.35 - 0.8 * rows / max(horizon, 0.05)), 0, 1)
+    warm = np.array([0.92, 1.0, 1.08], np.float32)
+    cool = np.array([1.08, 1.0, 0.94], np.float32)
+    tint = (warm if family in ('golden_am', 'golden_pm')
+            else cool if family == 'night' else
+            np.array([1.0, 1.0, 1.0], np.float32))
+    image[:] = sky[..., None] * tint[None, None, :]
+
+    # Ground, darker than the sky and with its own cast.
+    ground = int(size * horizon)
+    image[ground:] = (base * float(rng.uniform(0.35, 0.8))
+                      * rng.uniform(0.9, 1.1, size=3).astype(np.float32))
+
+    # A building edge: a hard vertical boundary, which is what the local
+    # standard deviation planes are there to find.
+    if rng.random() < 0.8:
+        edge = int(rng.uniform(0.1, 0.6) * size)
+        wide = int(rng.uniform(0.1, 0.35) * size)
+        image[:ground, edge:edge + wide] = (
+            base * float(rng.uniform(0.2, 0.6))
+            * rng.uniform(0.9, 1.1, size=3).astype(np.float32))
+
+    # A car-sized box on the ground - the thing the whole program is for.
+    if rng.random() < 0.85:
+        box_h = int(rng.uniform(0.08, 0.22) * size)
+        box_w = int(box_h * rng.uniform(1.6, 2.8))
+        top = int(rng.uniform(ground, max(ground + 1, size - box_h)))
+        left = int(rng.uniform(0, max(1, size - box_w)))
+        shade = base * float(rng.uniform(0.25, 1.15))
+        image[top:top + box_h, left:left + box_w] = (
+            np.clip(shade, 0, 1)
+            * rng.uniform(0.7, 1.3, size=3).astype(np.float32))
+        # Its windows, a second scale of detail inside the first.
+        if box_h > 6 and box_w > 10:
+            image[top + box_h // 5:top + box_h // 2,
+                  left + box_w // 6:left + box_w // 2] *= float(rng.uniform(0.3, 0.7))
+
+    # Foliage: texture at a fine scale, which is what tells s_small from
+    # s_large and what a denoiser must not wipe.
+    if rng.random() < 0.7:
+        patch = rng.random((size, size)).astype(np.float32)
+        patch = cv2.GaussianBlur(patch, (0, 0),
+                                 float(rng.uniform(1.0, 3.0)))[..., None]
+        mask = np.zeros((size, size, 1), np.float32)
+        band = int(rng.uniform(0.05, 0.3) * size)
+        mask[max(0, ground - band):ground + band // 2] = 1.0
+        image *= 1.0 - 0.55 * mask * patch
+
+    # A lamp, and the glare around it. The dilated glare plane exists for
+    # exactly this: a bright source whose neighbourhood must not be lifted.
+    if rng.random() < 0.65:
+        cy = int(rng.uniform(0.05, max(0.06, horizon)) * size)
+        cx = int(rng.uniform(0.05, 0.95) * size)
+        radius = max(2, int(rng.uniform(0.01, 0.05) * size))
+        lamp = np.zeros((size, size), np.float32)
+        cv2.circle(lamp, (cx, cy), radius, 1.0, -1)
+        halo = cv2.GaussianBlur(lamp, (0, 0), radius * float(rng.uniform(2, 5)))
+        glow = np.clip(lamp + halo * float(rng.uniform(0.4, 0.9)), 0, 1)
+        lamp_tint = np.array([0.75, 0.95, 1.15], np.float32)   # sodium, BGR
+        image = np.clip(image + glow[..., None] * lamp_tint[None, None, :], 0, 1)
+
+    # Grain, so no region is perfectly flat - a real photograph has none.
+    image += rng.normal(0, float(rng.uniform(0.004, 0.02)), image.shape)
+    image = np.clip(image, 0, 1)
+
+    # Normalise the scene to a well exposed average, and this is the part that
+    # makes the whole objective learnable rather than ambiguous.
+    #
+    # The brain is given a degraded frame and asked how much to lift each
+    # pixel. If the simulated scenes had any brightness at all, then the same
+    # feature row - same pixel level, same frame mean - could have come from a
+    # bright scene barely darkened or a dark scene heavily darkened, and the
+    # right answer would be different in each case. No function of the
+    # features could tell them apart, so the brain would learn the average of
+    # contradictory answers.
+    #
+    # Fixing the clear frame's mean removes the ambiguity: "recover the
+    # original" becomes "aim at a well exposed level", which is a rule the
+    # features CAN express - and it is the same rule the analytic correct
+    # follows, so the two agree instead of fighting.
+    mean = float(image.mean())
+    if mean > 0.01:
+        image = np.clip(image * (float(rng.uniform(0.42, 0.48)) / mean), 0, 1)
+    return image.astype(np.float32)
+
+
+def simulate_photos(family=None, count=24, seed=0, size=320):
+    """A folder's worth of simulated photographs, in load_photos' own shape:
+    a list of (name, float image), so every photo path works on them."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return [(f'simulated://{family or "all-day"}/{i:03d}',
+             simulate_photo(family, rng, size)) for i in range(count)]
+
+
+def overexpose(clear, rng, mandate=None):
+    """The other direction: one BLOWN frame from one clear frame.
+
+    degrade() makes a dark frame, and a dark frame can only ever ask to be
+    brightened. A brain whose job is to pull a level DOWN - bright_sun - would
+    be shown nothing but clipped targets by that, and would learn to leave
+    every frame alone. So for those families the simulated input is full sun
+    instead: more exposure than the scene needed, highlights clipped where it
+    ran past white, and the warm cast that direct sun has.
+
+    Returns (blown, frames) to match degrade's shape.
+    """
+    import cv2
+    import numpy as np
+
+    # How much too much exposure. Kept inside the darkening brain's own range
+    # (its gain floor is 0.7, so 1/0.7 = 1.43 is the most it could ever undo):
+    # overexposing harder than that would put most of the answer on the clip
+    # boundary and teach the brain a flat "as dark as allowed" instead of how
+    # far down this particular frame needs to come.
+    floor = float((mandate or brain_mandate(ACTIVE_BRAIN))['gain_min'])
+    scale = float(np.exp(rng.uniform(np.log(1.03),
+                                     np.log(1.0 / max(floor, 0.1)))))
+    warm = np.array([float(rng.uniform(0.86, 0.96)), 1.0,
+                     float(rng.uniform(1.04, 1.18))], np.float32)   # BGR
+    blown = np.clip(clear * scale * warm[None, None, :], 0, 1)
+
+    # Veiling glare: sun on the lens lifts the blacks and flattens the frame.
+    blown = np.clip(blown + float(rng.uniform(0.0, 0.08)), 0, 1)
+    blur = float(rng.uniform(0.0, 0.6))
+    if blur > 0.05:
+        blown = cv2.GaussianBlur(blown, (0, 0), blur)
+    blown += rng.normal(0, float(rng.uniform(0.001, 0.006)), blown.shape)
+    blown = np.clip(blown, 0, 1).astype(np.float32)
+
+    quality = int(rng.integers(70, 96))
+    ok, buffer = cv2.imencode('.jpg', (blown * 255).astype(np.uint8),
+                              [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if ok:
+        blown = cv2.imdecode(buffer, cv2.IMREAD_COLOR).astype(np.float32) / 255.0
+    return blown, 1
+
+
+def simulate_input(clear, rng, family=None):
+    """The frame the brain will be given, from the frame it should produce.
+
+    Dark for a brain that may only brighten, blown for one that may only
+    darken, and in both directions only as far as the brain is allowed to
+    correct back. The mandate decides, so adding a family needs nothing here.
+    """
+    mandate = brain_mandate(family)
+    if float(mandate['gain_max']) <= 1.0:
+        return overexpose(clear, rng, mandate)
+    return degrade(clear, rng, mandate)
+
+
+def as_the_brain_sees_it(frame):
+    """Put a frame through the two stages that run BEFORE the brain.
+
+    NOT used in training, and the reason is worth keeping. In production the
+    brain is handed a stacked, CLAHE'd frame, so feeding it the raw one in
+    training leaves a gap - and closing that gap was measured rather than
+    assumed. Training on CLAHE'd frames cost the brightening brains about
+    1.8 dB on the held-back scenes and bought the darkening brain nothing, so
+    the raw frame stays. Kept here because it is the right way to look at what
+    the brain actually receives when diagnosing one.
+
+    At run time the brain never sees a camera frame. It sees the average of
+    several stills with CLAHE already applied to the lightness - stack, then
+    local contrast, then the brain. Training on the raw frame instead leaves a
+    gap between what the brain was taught on and what it is given, and the
+    gap is worst exactly where CLAHE does most: a frame that is already bright
+    all over, which is the one the darkening brain gets.
+
+    The averaging is simulated by the stack count inside degrade, so what is
+    left to add here is the CLAHE, with the same clip and tile size the
+    corrector uses.
+    """
+    import cv2
+    import numpy as np
+
+    try:
+        import webcam_enhance                                 # noqa: PLC0415
+        clip = float(webcam_enhance.CLAHE_CLIP)
+        tiles = int(webcam_enhance.CLAHE_TILES)
+    except Exception:                                         # noqa: BLE001
+        clip, tiles = 2.5, 8
+
+    eight = np.clip(frame * 255.0, 0, 255).astype(np.uint8)
+    lab = cv2.cvtColor(eight, cv2.COLOR_BGR2LAB)
+    light, green_red, blue_yellow = cv2.split(lab)
+    equalized = cv2.createCLAHE(clipLimit=clip,
+                                tileGridSize=(tiles, tiles)).apply(light)
+    out = cv2.cvtColor(cv2.merge((equalized, green_red, blue_yellow)),
+                       cv2.COLOR_LAB2BGR)
+    return (out.astype(np.float32) / 255.0)
+
+
+def simulated_pair(clear, rng, family=None, aim=0.45):
+    """(input frame, the frame it should become, stack count).
+
+    Two different objectives, because the two directions are not mirror
+    images of each other:
+
+    BRIGHTENING - night, the golden hours, day. The input is a darkened copy
+    of the simulated scene and the answer is the scene itself. Recovering
+    detail the exposure lost is exactly the job, and the original is the
+    ground truth for it.
+
+    DARKENING - bright sun. The input is a blown copy, but the answer is NOT
+    the original scene: full sun clips the highlights and veils the blacks,
+    and no gain brings back what the sensor clipped away. Asking for the
+    original would be asking for the impossible and the brain would learn the
+    average of answers it cannot give. What this brain is actually for is
+    bringing an over-bright frame DOWN to a well exposed level, so that is
+    what it is taught: the answer is the blown frame itself, scaled to a well
+    exposed average. The objective is then both honest and learnable, and it
+    is the same rule the analytic correct follows, so the two agree rather
+    than fight.
+    """
+    import numpy as np
+
+    mandate = brain_mandate(family)
+    if float(mandate['gain_max']) > 1.0:
+        dark, frames = degrade(clear, rng, mandate)
+        return dark, clear, frames
+
+    blown, frames = overexpose(clear, rng, mandate)
+    mean = float(blown.mean())
+    if mean <= 0.01:
+        return blown, clear, frames
+    wanted = np.clip(blown * (float(aim) / mean), 0, 1).astype(np.float32)
+    return blown, wanted, frames
+
+
+def degrade(clear, rng, mandate=None):
     """One dark noisy frame from one clear frame, plus the stack count used.
 
     The stack count matters: at run time the brain is fed the average of
@@ -908,7 +1181,16 @@ def degrade(clear, rng):
 
     # How much exposure was lost. Log-uniform, because the difference between
     # dusk and full dark is multiplicative.
-    scale = float(np.exp(rng.uniform(np.log(0.03), np.log(0.30))))
+    #
+    # The range is bounded by what this brain is ALLOWED to undo. A frame
+    # darkened thirty-fold handed to a brain whose ceiling is five has only
+    # one possible answer - the ceiling - and a training set full of those
+    # teaches "always lift as hard as you may", which then over-brightens
+    # every frame that needed less. Keeping the loss inside the mandate means
+    # every sample has an answer the brain can actually give.
+    ceiling = float((mandate or brain_mandate(ACTIVE_BRAIN))['gain_max'])
+    worst = 1.0 / max(ceiling, 1.05)
+    scale = float(np.exp(rng.uniform(np.log(worst), np.log(min(0.9, worst * 9)))))
 
     # A colour cast, which is what sodium and LED street lighting does.
     cast = rng.uniform(0.88, 1.12, size=3).astype(np.float32)
@@ -944,6 +1226,30 @@ def degrade(clear, rng):
     return dark, frames
 
 
+def encode_gain(gain, mandate):
+    """A physical gain into the 0 to 1 the brain's first output works in.
+
+    One place for this mapping, because three things have to agree about it:
+    the photo targets, the synthetic targets, and the decode in
+    webcam_enhance. Values outside the family's range are clipped to it, so a
+    target is never an answer the brain is not allowed to give.
+    """
+    import numpy as np
+    low = max(0.05, float(mandate['gain_min']))
+    high = max(low * 1.0001, float(mandate['gain_max']))
+    gain = np.clip(gain, low, high)
+    return np.log(gain / low) / np.log(high / low)
+
+
+def encode_saturation(want, mandate):
+    """The same for the colour multiplier, the brain's second output."""
+    import numpy as np
+    low = max(0.01, float(mandate['sat_min']))
+    high = max(low * 1.0001, float(mandate['sat_max']))
+    want = np.clip(want, low, high)
+    return np.log(want / low) / np.log(high / low)
+
+
 def targets_for(dark, clear, family=None):
     """What the brain should have said, for every pixel.
 
@@ -971,20 +1277,15 @@ def targets_for(dark, clear, family=None):
     mandate = brain_mandate(family)
     g_low = max(0.05, float(mandate['gain_min']))
     g_high = max(g_low * 1.0001, float(mandate['gain_max']))
-    s_low = float(mandate['sat_min'])
-    s_high = max(s_low * 1.0001, float(mandate['sat_max']))
 
     gain = (y_clear + eps) / (y_dark + eps)
     gain = np.clip(gain, g_low, g_high)
-    # 0 to 1 across the family's own range, which is the same mapping the
-    # decode at inference reverses.
-    t_gain = np.log(gain / g_low) / np.log(g_high / g_low)
+    t_gain = encode_gain(gain, mandate)
 
     chroma_dark = dark.max(axis=2) - dark.min(axis=2)
     chroma_clear = clear.max(axis=2) - clear.min(axis=2)
     want = (chroma_clear + eps) / ((chroma_dark + eps) * gain)
-    want = np.clip(want, s_low, s_high)
-    t_sat = np.log(want / s_low) / np.log(s_high / s_low)
+    t_sat = encode_saturation(want, mandate)
     return np.stack([t_gain, t_sat], axis=-1).astype(np.float32)
 
 
@@ -1169,10 +1470,10 @@ def make_samples(photos, count, rng, crop=128, report=None):
         left = int(rng.integers(0, width - size + 1))
         clear = photo[top:top + size, left:left + size].copy()
 
-        dark, frames = degrade(clear, rng)
+        dark, wanted, frames = simulated_pair(clear, rng, family=ACTIVE_BRAIN)
         stacks.append(frames)
         planes = feature_planes(dark)
-        answers = targets_for(dark, clear, family=ACTIVE_BRAIN)
+        answers = targets_for(dark, wanted, family=ACTIVE_BRAIN)
 
         # Take a scatter of pixels from this crop rather than all of them:
         # neighbouring pixels say almost the same thing, and a spread of crops
@@ -1248,7 +1549,8 @@ def evaluate(model, val_photos, rng, trials=2):
     for _, clear in val_photos:
         for _ in range(trials):
             reference = (clear * 255).astype(np.uint8)
-            darks = [degrade(clear, rng)[0] for _ in range(frames_used)]
+            darks = [simulate_input(clear, rng, family=ACTIVE_BRAIN)[0]
+                     for _ in range(frames_used)]
             single = (darks[-1] * 255).astype(np.uint8)
             stacked = np.clip(np.mean([d * 255 for d in darks], axis=0),
                               0, 255).astype(np.uint8)
@@ -1307,7 +1609,7 @@ def make_read_only(path):
 
 
 def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
-          use_corpus=False, preset=None):
+          use_corpus=False, preset=None, photos=None, source_label=None):
     import numpy as np
 
     def say(line):
@@ -1323,12 +1625,16 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         say(f'{MODEL_PATH} is already there. --force to retrain over it.')
         return 0
 
-    photos = []
-    used = ''
+    photos = list(photos or [])
+    used = source_label or ''
     pairs = []
-    trained_from = 'general photos'
+    trained_from = source_label or 'general photos'
 
-    if use_corpus:
+    if photos:
+        # Handed a list of photographs rather than a folder - which is how the
+        # simulated ones come in. Everything after this is the same path.
+        say(f'{label}: {len(photos)} {trained_from}')
+    elif use_corpus:
         # This camera's own frames, harvested as the scripts ran - and, when a
         # family was named, only the frames harvested under that family's own
         # presets, so a night brain never sees a daylight frame.
@@ -1363,6 +1669,7 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         f'{len(val_photos)} held back for validation (split by photo, not by '
         f'pixel, so no crop appears in both)')
 
+    mandate_for_score = brain_mandate(family)
     rng = np.random.default_rng(20000)
     started = time.time()
     say(f'brain G: building {samples} training samples')
@@ -1420,12 +1727,25 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
     # is not worth running.
     baseline = float(np.mean((y_val - y_train.mean(axis=0)) ** 2))
 
-    say('brain G: scoring the whole pipeline on the held-back photos')
-    try:
-        scored = evaluate(model, val_photos, rng)
-    except Exception as problem:                              # noqa: BLE001
-        say(f'brain G: could not score the pipeline ({problem})')
-        scored = {}
+    # The pipeline score compares the corrected frame with the clear original,
+    # which only means something for a brain whose job IS to recover that
+    # original. The darkening brain is not trying to: it is bringing an
+    # over-bright frame down to a well exposed level, and the clipped
+    # highlights and veiled blacks of full sun are gone for good. Scoring it
+    # against the original would report a number that looks like failure and
+    # measures the wrong thing, so it is not reported at all.
+    if float(mandate_for_score['gain_max']) <= 1.0:
+        say(f'{label}: pipeline PSNR not applicable - this brain brings a '
+            'level down rather than recovering a scene')
+        scored = {'note': 'psnr against the original does not apply to a '
+                          'darkening brain'}
+    else:
+        say(f'{label}: scoring the whole pipeline on the held-back photos')
+        try:
+            scored = evaluate(model, val_photos, rng)
+        except Exception as problem:                          # noqa: BLE001
+            say(f'{label}: could not score the pipeline ({problem})')
+            scored = {}
     if scored:
         say(f'  dark input          {scored.get("dark_input_psnr_db")} dB')
         say(f'  stack + CLAHE       {scored.get("stack_and_clahe_psnr_db")} dB')
@@ -1507,6 +1827,175 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
     return 0
 
 
+def _brain_synth_generate(family, n_samples, seed=0):
+    """Generate synthetic (features, targets) training pairs for one brain.
+
+    Same shape of thing as the trading robot's brains: sample every feature
+    from its natural range, then label each row from a hand-designed "true
+    correction" function rather than from data. The head learns to
+    interpolate the frozen foundation's detectors into a smooth correction
+    surface, and it learns it in seconds on any CPU with no photographs at
+    all - which is what makes a first run able to pretrain all five brains
+    before the camera has seen anything.
+
+    The labelling is a SIMPLIFIED version of what a well exposed frame of the
+    same scene would have asked for: aim the pixel at a well exposed level,
+    lift the shadows harder than the highlights, hold back where the frame is
+    already glaring, and put back the colour that the lift washes out. The
+    family's mandate decides the range those answers are clipped into, so the
+    night brain comes out of this knowing only how to brighten and the bright
+    sun brain only how to pull a level down.
+
+    Returns (X, Y) with X (n, 12) matching feature_planes' order exactly and
+    Y (n, 2) in the same encoded 0 to 1 space as targets_for.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    mandate = brain_mandate(family)
+    X = np.empty((n_samples, BRAIN_G_FEATURES), dtype=np.float32)
+    gains = np.empty(n_samples, dtype=np.float32)
+    sats = np.empty(n_samples, dtype=np.float32)
+
+    # What light this brain actually sees. A night brain is never shown a
+    # sunlit frame and a bright sun brain is never shown a dark one, because
+    # that is the whole point of training one brain per preset.
+    scene_low, scene_high = {
+        'night': (0.004, 0.14),
+        'golden_am': (0.06, 0.45),
+        'day': (0.25, 0.70),
+        'bright_sun': (0.45, 0.92),
+        'golden_pm': (0.05, 0.45),
+    }.get(family, (0.01, 0.85))
+
+    for i in range(n_samples):
+        # The frame this pixel sits in, then the pixel itself relative to it.
+        # Sampling the scene first is what makes the whole-frame features
+        # (g_mean, hi) agree with the per-pixel ones instead of being noise.
+        scene = float(rng.uniform(scene_low, scene_high))
+        # Shadows, midtones and highlights of that scene, with shadows over
+        # represented because they are where a correction earns its keep.
+        tone = float(rng.choice([0.25, 1.0, 2.2], p=[0.45, 0.4, 0.15]))
+        luma = float(np.clip(scene * tone * rng.uniform(0.6, 1.4), 0.0, 1.0))
+
+        # The three box blurs: the same pixel seen at widening radius, so
+        # they sit between the pixel and the scene level.
+        m_small = float(np.clip(luma + rng.normal(0, 0.05), 0, 1))
+        m_mid = float(np.clip(0.6 * luma + 0.4 * scene + rng.normal(0, 0.05), 0, 1))
+        m_large = float(np.clip(0.25 * luma + 0.75 * scene + rng.normal(0, 0.04), 0, 1))
+        detail = float(np.clip((luma - m_mid) * 4.0, -1, 1))
+
+        # Local texture. Noise rises as the light falls, which is the single
+        # most useful thing about a night frame: a dark, grainy region needs
+        # less gain than its level alone suggests, or the grain comes up with
+        # it.
+        grain = float(np.clip(rng.uniform(0.0, 0.5) * (1.0 - scene), 0, 1))
+        s_small = float(np.clip(rng.uniform(0.0, 0.6) + grain, 0, 1))
+        s_large = float(np.clip(s_small * rng.uniform(0.5, 1.2), 0, 1))
+
+        g_mean = float(np.clip(scene + rng.normal(0, 0.03), 0, 1))
+        hi = float(np.clip(max(scene * rng.uniform(1.4, 3.0), luma), 0, 1))
+        glare = float(np.clip(max(luma, hi * rng.uniform(0.5, 1.0)), 0, 1))
+        colour = float(np.clip(rng.uniform(0.0, 0.9) * (0.4 + scene), 0, 1))
+        black = float(max(0.0, 1.0 - luma / 0.06))
+
+        X[i] = [luma, m_small, m_mid, m_large, detail, s_small, s_large,
+                g_mean, hi, glare, colour, black]
+
+        # ---- the "true" correction for this pixel ----
+        #
+        # Aim the pixel at a well exposed level. 0.45 is the same target the
+        # analytic correct uses, so the brain and the fallback agree about
+        # what "well exposed" means.
+        want = 0.45
+        wanted_gain = (want + 0.012) / (luma + 0.012)
+
+        # Hold back where the frame is already glaring: lifting a highlight
+        # only clips it, and a frame whose 99th percentile is near white has
+        # nothing left up there.
+        if glare > 0.75:
+            wanted_gain *= 1.0 - 0.5 * (glare - 0.75) / 0.25
+        # Hold back on grain, hardest in the dark where there is most of it.
+        wanted_gain *= 1.0 - 0.35 * grain
+        # Lift a genuinely black pixel a little less than the arithmetic says:
+        # at two counts out of 255 there is nothing there to lift but noise.
+        if black > 0.5:
+            wanted_gain *= 1.0 - 0.25 * (black - 0.5) / 0.5
+        # Local contrast is worth keeping: a pixel already brighter than its
+        # surroundings does not need all of the lift its level asks for.
+        if detail > 0.2:
+            wanted_gain *= 1.0 - 0.15 * min(1.0, detail)
+
+        # The colour that lift washes out. A gain multiplies luma and chroma
+        # together, so the chroma has to be pulled back toward where it was -
+        # less so at night, where saturated noise is what comes up.
+        wanted_sat = 1.0 / (max(wanted_gain, 0.05) ** 0.3)
+        if family == 'night':
+            # "Colour kept day and night, with a little less of it at night."
+            wanted_sat *= 0.85 - 0.25 * grain
+        if family == 'bright_sun':
+            # Full sun flattens colour and runs warm; the tint handles the
+            # warmth, this puts a little of the colour back.
+            wanted_sat *= 1.0 + 0.25 * (1.0 - colour)
+        if family in ('golden_am', 'golden_pm'):
+            # The golden hours are the one time the colour is the point.
+            wanted_sat *= 1.1
+
+        gains[i] = wanted_gain
+        sats[i] = wanted_sat
+
+    Y = np.stack([encode_gain(gains, mandate),
+                  encode_saturation(sats, mandate)], axis=-1).astype(np.float32)
+    return X, Y
+
+
+def synth_pretrain(family, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
+                   seed=None, photo_count=SIMULATED_PHOTOS):
+    """Pretrain one brain with no photographs of this camera at all.
+
+    The rows come from SIMULATED PHOTOGRAPHS: scenes that never existed, built
+    out of what this camera looks at - a sky gradient, a building edge, a
+    car-sized box, foliage texture, a lamp with its glare, grain - and then
+    put through exactly the pipeline a real photo goes through. simulate_input
+    makes the frame the brain will be given (dark for a brain that may only
+    brighten, blown for one that may only darken), feature_planes reads it,
+    and targets_for against the clear original says what the answer was. So
+    the brain is trained by the same two functions that will be used on it,
+    and the twelve spatial features mean what they will mean at run time.
+
+    That is the trading robots' pattern applied to pictures: pretrain on
+    generated material with a known right answer, then fine-tune on what the
+    world actually sends. Here the fine-tune is the harvest, per preset.
+
+    Idempotent: a brain already on disk is left alone unless force is set.
+    Returns (trained, note).
+    """
+    def say(line):
+        if not quiet:
+            print(line, flush=True)
+
+    family = use_brain(family)
+    label = f'brain {family}' if family else 'brain G'
+    if os.path.isfile(MODEL_PATH) and not force:
+        return (False, f'{label}: already trained, leaving it alone')
+
+    mandate = brain_mandate(family)
+    seed = seed if seed is not None else (
+        1000 + (BRAIN_FAMILIES.index(family) if family in BRAIN_FAMILIES else 99))
+    say(f'{label}: first-run pretraining on {photo_count} simulated '
+        f'photographs - {mandate["note"]}')
+
+    photos = simulate_photos(family=family, count=photo_count, seed=seed)
+    outcome = train(force=True, samples=samples, quiet=quiet, preset=family,
+                    photos=photos, source_label='simulated photographs')
+    if outcome != 0:
+        return (False, f'{label}: pretraining did not complete')
+
+    note = f'{label}: pretrained on simulated photographs, saved {MODEL_PATH}'
+    say(note)
+    return (True, note)
+
+
 def pretrain_all(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES,
                  quiet=False, report=None, families=None):
     """Pretrain one brain per lighting preset from the same clear photos.
@@ -1532,12 +2021,33 @@ def pretrain_all(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES,
         elif not quiet:
             print(line, flush=True)
 
+    # Photographs if there are any - real frames of a real scene beat
+    # synthetic rows - and synthetic otherwise, so a first run on a machine
+    # with no pictures still ends up with five trained brains rather than
+    # none. Either way the model, the frozen foundation and the training
+    # steps are the same; only the rows differ.
+    folders = [photo_folder] if photo_folder else list(PHOTO_GUESSES)
+    have_photos = False
+    for folder in folders:
+        if folder and os.path.isdir(folder) and load_photos(folder, limit=4):
+            have_photos = True
+            break
+    if not have_photos:
+        say('no clear photos to train from, so pretraining on simulated '
+            "photographs - the same thing the trading robot's brains do on a "
+            'first run, with pictures in place of market rows')
+
     trained, lines = 0, []
     for family in (families or BRAIN_FAMILIES):
         say(f'=== brain {family}: {BRAIN_MANDATE[family]["note"]}')
         try:
-            outcome = train(photo_folder=photo_folder, force=force,
-                            samples=samples, quiet=quiet, preset=family)
+            if have_photos:
+                outcome = train(photo_folder=photo_folder, force=force,
+                                samples=samples, quiet=quiet, preset=family)
+            else:
+                did, _note = synth_pretrain(family, force=force,
+                                            samples=samples, quiet=quiet)
+                outcome = 0 if did else 1
         except Exception as problem:                          # noqa: BLE001
             line = f'brain {family}: training failed - {problem}'
             lines.append(line)
@@ -1838,6 +2348,11 @@ def main():
                              'from photos does all five by default already')
     parser.add_argument('--gain-fraction', type=float,
                         help='0 to 1, how hard the camera is working, for --harvest')
+    parser.add_argument('--synthetic', action='store_true',
+                        help='pretrain on synthetic samples instead of '
+                             'photos - no pictures needed, which is how a '
+                             'first run gets all five brains before the '
+                             'camera has seen anything')
     parser.add_argument('--corpus-state', action='store_true',
                         help='what has been harvested so far')
     parser.add_argument('--reset-retrain', action='store_true',
@@ -1897,6 +2412,22 @@ def main():
                                         preset=args.preset)
         print(line)
         return 0 if did else 1
+
+    if args.synthetic:
+        if args.preset:
+            did, _note = synth_pretrain(args.preset, force=args.force,
+                                        samples=min(args.samples, PRETRAIN_CAP),
+                                        quiet=args.quiet)
+            return 0 if did else 1
+        trained = 0
+        for family in BRAIN_FAMILIES:
+            did, _note = synth_pretrain(family, force=args.force,
+                                        samples=min(args.samples, PRETRAIN_CAP),
+                                        quiet=args.quiet)
+            trained += 1 if did else 0
+        print(f'pretrained {trained} of {len(BRAIN_FAMILIES)} brains '
+              'on synthetic samples')
+        return 0 if trained else 1
 
     if args.preset:
         # One named brain.

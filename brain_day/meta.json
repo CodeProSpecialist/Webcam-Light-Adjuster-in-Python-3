@@ -1,0 +1,73 @@
+{
+  "brain": "brain_day",
+  "brain_family": "day",
+  "brain_presets": [
+    "day"
+  ],
+  "feature_count": 12,
+  "foundation_units": [
+    "DEEP_SHADOW",
+    "NEAR_BLACK_CLIPPED",
+    "LOCAL_DETAIL",
+    "GLARE_NEARBY",
+    "FLAT_NOISE",
+    "MIDTONE_BODY",
+    "HIGHLIGHT_GUARD",
+    "COLOUR_PRESENT",
+    "GLOBAL_DARK_SCENE"
+  ],
+  "foundation_frozen": true,
+  "architecture": "12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2",
+  "outputs": [
+    "gain_0_1_over_1.0_to_12.0",
+    "saturation_0_1_over_0.25_to_4.0_no_change_at_0.500"
+  ],
+  "gain_max": 12.0,
+  "mandate": {
+    "gain_min": 1.0,
+    "gain_max": 12.0,
+    "sat_min": 0.25,
+    "sat_max": 4.0,
+    "dim_lift": 0.0,
+    "clahe_scale": 1.0,
+    "denoise_scale": 1.0,
+    "sharpen": 0.0,
+    "tint": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "note": "unchanged - the daylight behaviour as it was"
+  },
+  "pretrain_samples": 20000,
+  "pretrain_cap": 20000,
+  "epochs_run": 6,
+  "epochs_max": 30,
+  "val_loss": 0.025193,
+  "val_mae": 0.1304,
+  "flat_answer_val_loss": 0.054613,
+  "photos_trained_on": 20,
+  "photos_held_back": 4,
+  "photo_folder": "simulated photographs",
+  "trained_at": "2026-11-13 19:52:51",
+  "tensorflow": "2.21.0",
+  "read_only": true,
+  "evaluation": {
+    "frames_stacked": 8,
+    "photos_scored": 4,
+    "trials_each": 2,
+    "dark_input_psnr_db": 9.83,
+    "dark_input_ssim": 0.412,
+    "stack_and_clahe_psnr_db": 10.42,
+    "stack_and_clahe_ssim": 0.539,
+    "analytic_psnr_db": 16.93,
+    "analytic_ssim": 0.811,
+    "brain_psnr_db": 16.97,
+    "brain_ssim": 0.582,
+    "brain_beats_analytic_db": 0.04
+  },
+  "trained_from": "simulated photographs",
+  "real_pairs": "none",
+  "corpus": null,
+  "model_sha256": "5a01c54b75226bb6d8dfefcc4a5b7d4fffa0e3fb537582bc68490e97ef79e6fb"
+}

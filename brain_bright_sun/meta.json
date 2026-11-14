@@ -1,0 +1,62 @@
+{
+  "brain": "brain_bright_sun",
+  "brain_family": "bright_sun",
+  "brain_presets": [
+    "bright_sun"
+  ],
+  "feature_count": 12,
+  "foundation_units": [
+    "DEEP_SHADOW",
+    "NEAR_BLACK_CLIPPED",
+    "LOCAL_DETAIL",
+    "GLARE_NEARBY",
+    "FLAT_NOISE",
+    "MIDTONE_BODY",
+    "HIGHLIGHT_GUARD",
+    "COLOUR_PRESENT",
+    "GLOBAL_DARK_SCENE"
+  ],
+  "foundation_frozen": true,
+  "architecture": "12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2",
+  "outputs": [
+    "gain_0_1_over_0.7_to_1.0",
+    "saturation_0_1_over_0.6_to_1.8_no_change_at_0.465"
+  ],
+  "gain_max": 12.0,
+  "mandate": {
+    "gain_min": 0.7,
+    "gain_max": 1.0,
+    "sat_min": 0.6,
+    "sat_max": 1.8,
+    "dim_lift": 0.0,
+    "clahe_scale": 1.15,
+    "denoise_scale": 0.8,
+    "sharpen": 0.15,
+    "tint": [
+      1.06,
+      1.0,
+      0.96
+    ],
+    "note": "direct sun - darkens a little and cools the colour slightly"
+  },
+  "pretrain_samples": 20000,
+  "pretrain_cap": 20000,
+  "epochs_run": 30,
+  "epochs_max": 30,
+  "val_loss": 0.002698,
+  "val_mae": 0.03346,
+  "flat_answer_val_loss": 0.094648,
+  "photos_trained_on": 20,
+  "photos_held_back": 4,
+  "photo_folder": "simulated photographs",
+  "trained_at": "2026-11-13 19:52:58",
+  "tensorflow": "2.21.0",
+  "read_only": true,
+  "evaluation": {
+    "note": "psnr against the original does not apply to a darkening brain"
+  },
+  "trained_from": "simulated photographs",
+  "real_pairs": "none",
+  "corpus": null,
+  "model_sha256": "3cb96d09544c984f80add89fb884746f41e37673d10302dfb5337910a1d17a10"
+}

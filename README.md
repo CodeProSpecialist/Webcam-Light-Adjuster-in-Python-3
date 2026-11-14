@@ -492,6 +492,104 @@ asked about a bright frame:
 | `bright_sun` | `bright_sun` | `~/.webcam-models/brain_bright_sun/` |
 | `golden_pm` | `golden_pm` | `~/.webcam-models/brain_golden_pm/` |
 
+### Pretraining needs no photographs
+
+Each brain is pretrained the way the trading robots' brains are - on generated
+material with a known right answer, then fine-tuned on what the world actually
+sends. Here the generated material is **simulated photographs**: scenes that
+never existed, built out of what this camera looks at. A sky gradient, a ground
+plane, a building edge, a car-sized box with windows, foliage texture, a sodium
+lamp with its glare, and grain.
+
+They are crude as pictures and that is fine. What matters is that they have the
+structure the twelve features measure - flat regions, hard edges, texture at two
+scales, a bright source with a halo, shadow - because those features are
+spatial. Three box blurs at widening radius and two local standard deviations
+mean nothing in a row of independently sampled numbers; built as a picture, they
+come out of `feature_planes` exactly as they will at run time, and the answer
+comes from `targets_for` against the clear original. The brain is trained by the
+same two functions that will be used on it.
+
+```
+# all five, from simulated photographs - no pictures needed
+python3 train_webcam_brain.py --synthetic
+
+# one of them
+python3 train_webcam_brain.py --synthetic --preset bright_sun
+```
+
+That is why a first run ends up with five working brains before the camera has
+seen anything, and why all five ship here: `brain_night/`, `brain_golden_am/`,
+`brain_day/`, `brain_bright_sun/` and `brain_golden_pm/`, 46 KB each, read-only,
+with their sha256 in `meta.json`.
+
+Nothing else about the model changes. `build_brain()`, the frozen hand-weighted
+foundation, the EarlyStopping on a held-back split, the read-only save and the
+sha256 are the photo path's, and `meta.json` records which rows were used as
+`trained_from`. Real photographs are still better where there are any, so
+`pretrain_all` uses them when it finds them and falls back to simulated ones
+when it does not. Either way the harvest then retrains each brain on its own
+presets' real frames.
+
+Three things had to be got right for this to teach anything, and each was
+measured rather than assumed:
+
+**The simulated scene is normalised to a well exposed average.** If the scenes
+had any brightness at all, the same feature row - same pixel level, same frame
+mean - could have come from a bright scene barely darkened or a dark scene
+heavily darkened, with a different right answer each time. No function of the
+features could tell those apart, so the brain would learn the average of
+contradictory answers. Fixing the clear frame's mean turns "recover the
+original" into "aim at a well exposed level", which the features can express -
+and it is the rule the analytic correct already follows, so the two agree
+instead of fighting.
+
+**The degradation stays inside what the brain may undo.** A frame darkened
+thirty-fold handed to a brain whose ceiling is five has only one possible
+answer, the ceiling, and a training set full of those teaches "always lift as
+hard as you may" - which then over-brightens every frame that needed less. The
+exposure loss is drawn from the family's own gain range, so every sample has an
+answer the brain can actually give. Before this fix the golden-hour brains
+scored 4 to 8 dB **worse** than the analytic correct they were supposed to beat.
+
+**The darkening brain is taught a different objective.** `degrade` makes a dark
+frame, and a dark frame can only ever ask to be brightened - so the bright sun
+brain was being shown nothing but clipped targets and learned to leave every
+frame alone. Its input is a *blown* frame instead, and its answer is not the
+original scene: full sun clips the highlights and veils the blacks, and no gain
+brings back what the sensor threw away. What it is taught is what it is for -
+bringing an over-bright frame down to a well exposed level. That objective it
+learns 35x better than a flat answer, against about 2x for the others.
+
+For the same reason the pipeline PSNR is not reported for that brain: the score
+compares the corrected frame with the clear original, which only means something
+for a brain whose job is to recover it.
+
+| brain | val loss vs a flat answer | against the analytic correct |
+| --- | --- | --- |
+| `night` | 2.1x better | +0.02 dB |
+| `golden_am` | 2.8x better | +6.01 dB |
+| `day` | 2.2x better | +0.04 dB |
+| `golden_pm` | 2.0x better | +2.21 dB |
+| `bright_sun` | 35.1x better | not applicable |
+
+On a flat test frame the five shipped brains do this, which is the mandate
+working rather than a measure of quality:
+
+| brain | frame in | out | multiplier |
+| --- | --- | --- | --- |
+| `night` | 18 | 104 | x5.9 |
+| `golden_am` | 63 | 112 | x1.78 |
+| `golden_pm` | 58 | 104 | x1.80 |
+| `day` | 113 | 161 | x1.43 |
+| `bright_sun` | 208 | 146 | x0.70, and cooler |
+
+One thing worth knowing: training feeds the brain the raw simulated frame, while
+in production it is handed a stacked and CLAHE'd one. Closing that gap was tried
+and rejected - training on CLAHE'd frames cost the brightening brains about
+1.8 dB and bought the darkening brain nothing. `as_the_brain_sees_it()` is kept
+for looking at what a brain actually receives when diagnosing one.
+
 ### What each brain is allowed to do
 
 Each brain's outputs are decoded into a range of its own, so the mandate is

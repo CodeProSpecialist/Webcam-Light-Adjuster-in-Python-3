@@ -1,0 +1,73 @@
+{
+  "brain": "brain_golden_am",
+  "brain_family": "golden_am",
+  "brain_presets": [
+    "golden_am"
+  ],
+  "feature_count": 12,
+  "foundation_units": [
+    "DEEP_SHADOW",
+    "NEAR_BLACK_CLIPPED",
+    "LOCAL_DETAIL",
+    "GLARE_NEARBY",
+    "FLAT_NOISE",
+    "MIDTONE_BODY",
+    "HIGHLIGHT_GUARD",
+    "COLOUR_PRESENT",
+    "GLOBAL_DARK_SCENE"
+  ],
+  "foundation_frozen": true,
+  "architecture": "12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2",
+  "outputs": [
+    "gain_0_1_over_1.0_to_5.0",
+    "saturation_0_1_over_0.5_to_2.0_no_change_at_0.500"
+  ],
+  "gain_max": 12.0,
+  "mandate": {
+    "gain_min": 1.0,
+    "gain_max": 5.0,
+    "sat_min": 0.5,
+    "sat_max": 2.0,
+    "dim_lift": 0.8,
+    "clahe_scale": 1.1,
+    "denoise_scale": 1.1,
+    "sharpen": 0.25,
+    "tint": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "note": "sunrise - lift eases off as the light climbs"
+  },
+  "pretrain_samples": 20000,
+  "pretrain_cap": 20000,
+  "epochs_run": 12,
+  "epochs_max": 30,
+  "val_loss": 0.028459,
+  "val_mae": 0.13243,
+  "flat_answer_val_loss": 0.078369,
+  "photos_trained_on": 20,
+  "photos_held_back": 4,
+  "photo_folder": "simulated photographs",
+  "trained_at": "2026-11-13 19:52:43",
+  "tensorflow": "2.21.0",
+  "read_only": true,
+  "evaluation": {
+    "frames_stacked": 8,
+    "photos_scored": 4,
+    "trials_each": 2,
+    "dark_input_psnr_db": 9.07,
+    "dark_input_ssim": 0.4,
+    "stack_and_clahe_psnr_db": 12.74,
+    "stack_and_clahe_ssim": 0.643,
+    "analytic_psnr_db": 17.56,
+    "analytic_ssim": 0.78,
+    "brain_psnr_db": 23.57,
+    "brain_ssim": 0.591,
+    "brain_beats_analytic_db": 6.01
+  },
+  "trained_from": "simulated photographs",
+  "real_pairs": "none",
+  "corpus": null,
+  "model_sha256": "93b67873a99d88ebfa680b6e7131173b35025ce2dcc83b687949ff8c027d7855"
+}
