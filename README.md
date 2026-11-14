@@ -428,6 +428,28 @@ log records what the camera *says* rather than what it was told: `v4l2-ctl`
 reports success for a write the camera then ignores, so each control is read
 back.
 
+### The light meter does not darken the picture from golden PM to golden AM
+
+Across `golden_pm`, `night`, `night_mono` and `golden_am` the meter may
+brighten the picture or hold it where the preset put it, and may **not** take
+it below that. By day it keeps the full range either way.
+
+The measurement is what misleads it. A night frame with a security light in it
+reads as "too bright" on both the mean and the blown-white test, and the
+meter's answer - less gain, less brightness - costs the car and the tarmac to
+tame one lamp that was never the subject. Those cuts then accumulate pass after
+pass and walk the live picture off into the dark. By day there is nothing wrong
+with trimming down: the sensor has range to spare and a blown frame really is
+worth taming.
+
+A cut made in daylight does not survive the sun going down either. When the
+preset changes into the falling light and a negative trim is still in force,
+the meter releases it back to the preset's own values on the next pass rather
+than waiting for two "too dark" readings to walk it up a step at a time.
+
+This is a live-stream rule, not a brain rule - it changes what is sent to the
+camera. The brains only ever touch the corrected stills.
+
 ## Night image correction: CLAHE and brain G
 
 ![A night frame before and after correction](docs/night-correction.png)

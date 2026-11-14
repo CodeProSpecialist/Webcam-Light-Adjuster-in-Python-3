@@ -170,6 +170,23 @@ GAMMA_CTRL = 'gamma'
 
 TRIM_MAX = 5           # steps either side of whatever the preset set
 
+# The presets that run from golden PM, through night, to golden AM. Across
+# these the meter may brighten the picture or hold it, and may NOT darken it
+# below what the preset set.
+#
+# Why: the light is falling or already gone, and the meter's own measurement
+# is the thing that misleads it. A night frame with a security light in it
+# reads as "too bright" on the mean and on the blown-white test, and the meter
+# answers by trimming gain and brightness DOWN - which takes the car and the
+# tarmac with it to tame a lamp that was never the subject. Then the trims
+# accumulate pass after pass and the live picture walks off into the dark,
+# which is where the dark camera came from in the first place.
+#
+# By day there is nothing wrong with trimming down: the sensor has range to
+# spare and a blown frame really is worth taming. So the floor applies to
+# these presets only, and day and bright sun keep the full range either way.
+DARK_PRESETS = ('golden_pm', 'night', 'night_mono', 'golden_am')
+
 # Snapshots to keep in the folder. The oldest beyond this are deleted.
 SNAP_KEEP = 30
 
@@ -846,6 +863,27 @@ class LightMeter:
             _run(['v4l2-ctl', '-d', self.device, '--set-ctrl', f'sharpness={value}'])
         return value
 
+    def dark_preset(self):
+        """Whether the preset in force is one of the falling-light ones."""
+        if not train_webcam_brain:
+            return False
+        try:
+            preset = train_webcam_brain.current_preset()
+        except Exception:                                      # noqa: BLE001
+            return False
+        if not preset:
+            return False
+        return str(preset).strip().lower().replace('-', '_') in DARK_PRESETS
+
+    def trim_floor(self):
+        """How far below the preset's own values the meter may go.
+
+        Zero from golden PM through night to golden AM, which means the meter
+        can brighten the picture or leave it alone and can never take it below
+        what the preset set. The full range by day.
+        """
+        return 0 if self.dark_preset() else -TRIM_MAX
+
     def apply_trim(self, trim):
         """Send the given trim, worked out from the preset's own baseline.
 
@@ -861,7 +899,7 @@ class LightMeter:
         installed. So try once more to learn it here, and if there is still
         nothing, say so rather than pretending.
         """
-        self.trim = max(-TRIM_MAX, min(TRIM_MAX, trim))
+        self.trim = max(self.trim_floor(), min(TRIM_MAX, trim))
         if not self.base:
             if not self.ranges:
                 self.learn_ranges()
@@ -1335,6 +1373,24 @@ class LightMeter:
         self.means = self.means[-3:]
         middle = sorted(self.means)[len(self.means) // 2]
 
+        # A trim left over from the daylight that came before. The sun going
+        # down does not undo a cut the meter made at noon, so a preset change
+        # into the falling light can arrive with the picture already held
+        # below the preset. Lift it back to the floor before deciding
+        # anything, rather than waiting for two "too dark" passes to walk it
+        # up a step at a time.
+        if self.trim < self.trim_floor():
+            was = self.trim
+            if self.apply_trim(self.trim_floor()):
+                log(f'trim {was:+d} -> {self.trim:+d}: the light meter does '
+                    'not darken the picture from golden PM through to golden '
+                    'AM, so the daylight trim is released', always=True)
+                self.hold = METER_SETTLE
+                self.means = []
+                return (f'light meter: trim {self.trim:+d}, the daylight trim '
+                        'is released - the picture is not darkened from golden '
+                        'PM through to golden AM')
+
         # Which way to go. The clipping checks come first: they are the too
         # much white light and too much darkness tests, and either can override
         # a mean that looks perfectly reasonable on its own.
@@ -1348,6 +1404,17 @@ class LightMeter:
             direction, why = -1, 'too bright'
         elif middle < self.target - MEAN_TOL:
             direction, why = 1, 'too dark'
+
+        # From golden PM through to golden AM the meter may not darken the
+        # picture. The measurement that asks it to is usually a lamp or a pair
+        # of headlights in an otherwise dark frame, and the answer - less gain,
+        # less brightness - costs the whole picture to tame one bright patch.
+        # Held at the preset rather than cut, and said plainly so the status
+        # line does not read as a correction that never happened.
+        if direction < 0 and self.trim <= self.trim_floor():
+            direction = 0
+            why = (why + ' - holding at the preset: the light meter does not '
+                   'darken the picture from golden PM through to golden AM')
 
         # A security light over black tarmac holds more range than the sensor
         # can take, and then both checks fail at once: brightening blows the
@@ -1363,7 +1430,7 @@ class LightMeter:
         # Two samples in a row have to agree before anything moves.
         if direction != 0 and direction == self.last_dir:
             at_limit = (direction > 0 and self.trim >= TRIM_MAX) or \
-                       (direction < 0 and self.trim <= -TRIM_MAX)
+                       (direction < 0 and self.trim <= self.trim_floor())
             if at_limit:
                 why += ' - trim at its limit, the preset itself needs changing'
             else:
