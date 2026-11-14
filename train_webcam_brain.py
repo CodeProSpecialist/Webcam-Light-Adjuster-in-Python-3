@@ -76,6 +76,7 @@ import argparse
 import glob
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -1442,6 +1443,7 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
                 pass
     model.save(MODEL_PATH)
 
+    _mandate = brain_mandate(family)
     meta = {
         'brain': f'brain_{family}' if family else 'brain_g_night',
         'brain_family': family,
@@ -1450,13 +1452,22 @@ def train(photo_folder=None, force=False, samples=PRETRAIN_SAMPLES, quiet=False,
         'foundation_units': unit_names(),
         'foundation_frozen': True,
         'architecture': '12 -> 9 frozen -> (9 + raw 12) -> 24 -> 16 -> 2',
-        'outputs': ['log_gain_0_1', 'saturation_0_1_neutral_at_0.5'],
+        # Both outputs are 0 to 1 across this brain's own range, so where
+        # "no change" sits depends on the range: 0.5 exactly when the
+        # saturation range is symmetric about 1.0, a little either side when
+        # it is not. Recorded rather than assumed, because the tile reads it.
+        'outputs': [
+            f'gain_0_1_over_{_mandate["gain_min"]}_to_{_mandate["gain_max"]}',
+            f'saturation_0_1_over_{_mandate["sat_min"]}_to_'
+            f'{_mandate["sat_max"]}_no_change_at_'
+            f'{math.log(1.0 / _mandate["sat_min"]) / math.log(_mandate["sat_max"] / _mandate["sat_min"]):.3f}',
+        ],
         'gain_max': GAIN_MAX,
         # The range this brain's outputs decode into, and the rest of what it
         # is allowed to do. webcam_enhance reads these back rather than
         # assuming, so a brain always decodes against the range it was
         # trained against even if the mandate here changes later.
-        'mandate': brain_mandate(family),
+        'mandate': _mandate,
         'pretrain_samples': samples,
         'pretrain_cap': PRETRAIN_CAP,
         'epochs_run': epochs_run,
