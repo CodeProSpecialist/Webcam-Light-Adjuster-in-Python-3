@@ -183,12 +183,12 @@ class LivePage(tk.Frame):
 
         bar = tk.Frame(self)
         bar.pack(side='top', fill='x', padx=6)
-        self.state_dot = tk.Label(bar, text=' ', bg='#555555', width=2)
+        self.state_dot = tk.Label(bar, text=' ', bg='#ffffff', width=2)
         self.state_dot.pack(side='left', padx=(0, 6))
         self.state_text = tk.Label(bar, text='starting...',
                                    font=('Helvetica', 11, 'bold'))
         self.state_text.pack(side='left')
-        self.rate_text = tk.Label(bar, text='', fg='#445566',
+        self.rate_text = tk.Label(bar, text='', fg='#ffffff',
                                   font=('Helvetica', 9))
         self.rate_text.pack(side='right')
 
@@ -243,7 +243,7 @@ class LivePage(tk.Frame):
                   ).grid(row=0, column=2, padx=6)
         tk.Button(cams, text='Apply cameras', width=14, command=self.on_apply
                   ).grid(row=1, column=2, padx=6)
-        tk.Label(cams, fg='#445566', font=('Helvetica', 9), justify='left',
+        tk.Label(cams, fg='#ffffff', font=('Helvetica', 9), justify='left',
                  wraplength=420,
                  text=('Each camera needs its own device - two recorders on '
                        'one device is the "busy" failure. Every camera '
@@ -308,10 +308,10 @@ class LivePage(tk.Frame):
                   'pane stays dark and says the device is busy, that is what '
                   'it means. Camera controls and presets keep working while '
                   'recording.'),
-            fg='#664400', wraplength=900, justify='left', font=('Helvetica', 9),
+            fg='#ffff00', wraplength=900, justify='left', font=('Helvetica', 9),
         ).pack(side='top', anchor='w', padx=8, pady=(2, 0))
 
-        self.disk = tk.Label(self, text='', fg='#003366', anchor='w',
+        self.disk = tk.Label(self, text='', fg='#ffffff', anchor='w',
                              font=('Helvetica', 10))
         self.disk.pack(side='top', fill='x', padx=8, pady=2)
 
@@ -371,7 +371,7 @@ class LivePage(tk.Frame):
                         sticky='nsew')
             head = tk.Frame(holder)
             head.pack(side='top', fill='x')
-            dot = tk.Label(head, text=' ', bg='#555555', width=2)
+            dot = tk.Label(head, text=' ', bg='#ffffff', width=2)
             dot.pack(side='left')
             title = tk.Label(head, text=f'Camera {number}',
                              font=('Helvetica', 9, 'bold'))
@@ -676,7 +676,7 @@ class LivePage(tk.Frame):
                 failed.append(f'{name}: {problem}')
 
         self.state_text.config(text='state cleared - restart the program')
-        self.state_dot.config(bg='#555555')
+        self.state_dot.config(bg='#ffffff')
         if window is not None:
             window.destroy()
 
@@ -755,7 +755,7 @@ class LivePage(tk.Frame):
             elif row.get('running') and not stale:
                 pane['dot'].config(bg='#2277cc')
             else:
-                pane['dot'].config(bg='#555555')
+                pane['dot'].config(bg='#ffffff')
             pane['title'].config(
                 text=f"Camera {pane['index']}"
                      + (f'  {device}' if device else '')
@@ -780,7 +780,7 @@ class LivePage(tk.Frame):
             self.state_dot.config(bg='#2277cc')
             self.state_text.config(text='preview only - nothing is being kept')
         else:
-            self.state_dot.config(bg='#555555')
+            self.state_dot.config(bg='#ffffff')
             self.state_text.config(text='stopped')
         self.rate_text.config(text=f'drawing {self.shown_fps:.0f} fps total')
 
@@ -795,7 +795,7 @@ class LivePage(tk.Frame):
                   f"disk, floor {target:.0f} GB"
                   + (f"   -   oldest kept: {status['oldest']}"
                      if status['oldest'] else '')),
-            fg='#aa0000' if free < target * 0.6 else '#003366')
+            fg='#aa0000' if free < target * 0.6 else '#ffffff')
         self.after(STATUS_MS, self.status_tick)
 
 
@@ -884,13 +884,13 @@ class ArchivePage(tk.Frame):
                       command=lambda s=seconds, t=label: self.on_span(s, t)
                       ).pack(side='left', padx=2)
 
-        self.summary = tk.Label(self, text='', anchor='w', fg='#003366',
+        self.summary = tk.Label(self, text='', anchor='w', fg='#ffffff',
                                 font=('Helvetica', 10))
         self.summary.pack(side='top', fill='x', padx=8)
-        self.span_label = tk.Label(self, text='', anchor='w', fg='#445566',
+        self.span_label = tk.Label(self, text='', anchor='w', fg='#ffffff',
                                    font=('Helvetica', 9))
         self.span_label.pack(side='top', fill='x', padx=8)
-        self.found = tk.Label(self, text='', anchor='w', fg='#003366',
+        self.found = tk.Label(self, text='', anchor='w', fg='#ffffff',
                               font=('Helvetica', 9))
         self.found.pack(side='top', fill='x', padx=8)
 
@@ -953,7 +953,7 @@ class ArchivePage(tk.Frame):
         self.speed_box.pack(side='left')
         self.speed_box.bind('<<ComboboxSelected>>', self.on_speed)
 
-        self.at_label = tk.Label(controls, text='', fg='#445566')
+        self.at_label = tk.Label(controls, text='', fg='#ffffff')
         self.at_label.pack(side='right')
 
         # -- cutting a clip out --
@@ -987,13 +987,13 @@ class ArchivePage(tk.Frame):
                        'pieces are trimmed and joined without re-encoding, so '
                        'it is quick and loses nothing. Times are '
                        '"YYYY-MM-DD HH:MM:SS".'),
-                 wraplength=440, justify='left', fg='#445566',
+                 wraplength=440, justify='left', fg='#ffffff',
                  font=('Helvetica', 9)).grid(row=3, column=0, columnspan=5,
                                              sticky='w', pady=(2, 0))
-        self.clip_cam = tk.Label(cutter, text='', fg='#445566',
+        self.clip_cam = tk.Label(cutter, text='', fg='#ffffff',
                                  font=('Helvetica', 9))
         self.clip_cam.grid(row=2, column=5, sticky='w', padx=4)
-        self.clip_state = tk.Label(cutter, text='', fg='#003366',
+        self.clip_state = tk.Label(cutter, text='', fg='#ffffff',
                                    wraplength=440, justify='left',
                                    font=('Helvetica', 9))
         self.clip_state.grid(row=4, column=0, columnspan=5, sticky='w')
@@ -1107,7 +1107,7 @@ class ArchivePage(tk.Frame):
         self.found.config(
             text=(f'{len(rows)} segment(s) listed' if rows
                   else 'nothing in the index matched that search'),
-            fg='#003366' if rows else '#aa0000')
+            fg='#ffffff' if rows else '#aa0000')
 
     # -- playback --
 

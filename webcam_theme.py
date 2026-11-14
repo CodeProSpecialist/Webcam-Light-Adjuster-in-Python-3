@@ -43,17 +43,17 @@ from tkinter import ttk
 BG = '#0d1117'          # the page itself - near black, cool rather than warm
 PANEL = '#141d26'       # a tile or card lifted off the page
 EDGE = '#1f2a35'        # borders, separators, the edge of a card
-TEXT = '#c9d4de'        # ordinary text
-DIM = '#8b9bab'         # secondary text, units, hints
-ACCENT = '#4fd1c5'      # headings - the teal the badges and bars are built on
-LINK = '#67b7f7'        # anything that behaves like a link
+TEXT = '#ffffff'        # ordinary text
+DIM = '#ffffff'         # secondary text, units, hints
+ACCENT = '#ffff00'      # headings - the teal the badges and bars are built on
+LINK = '#ffffff'        # anything that behaves like a link
 SELECT = '#1e3a4a'      # selected text and list rows
 BUTTON = '#18222d'      # buttons and other raised controls
 BUTTON_ON = '#223040'   # a button under the pointer or being pressed
 ENTRY = '#0a0f15'       # typed-into fields, darker than the page
 TROUGH = '#0a0f15'      # the groove of a scale or a scrollbar
-GOOD = '#4ade80'        # ready, trained, running
-WARN = '#ffd166'        # works, but not the way it should
+GOOD = '#39ff14'        # ready, trained, running
+WARN = '#ffff00'        # works, but not the way it should
 BAD = '#ff8c8c'         # not there, or stopped
 
 # Widget classes that take -background and -foreground. Anything not in here

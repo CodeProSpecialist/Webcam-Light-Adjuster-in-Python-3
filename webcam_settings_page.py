@@ -311,9 +311,9 @@ class TerminalPane:
     ERROR_COLOURS = {
         'OpenCV': '#ff6b6b',
         'TensorFlow': '#ff9b4a',
-        'brain G': '#ffd166',
+        'brain G': '#ffff00',
         'detector': '#9bdcff',
-        'night correction': '#ffd166',
+        'night correction': '#ffff00',
         '': '#ff8c8c',
     }
 
@@ -335,7 +335,7 @@ class TerminalPane:
         bar = tk.Frame(frame)
         bar.pack(fill='x')
         self.status = tk.Label(bar, text='starting', anchor='w',
-                               font=('Helvetica', 8), fg='#003366')
+                               font=('Helvetica', 8), fg='#ffffff')
         self.status.pack(side='left', padx=4)
         tk.Button(bar, text='Clear', font=('Helvetica', 8),
                   command=self.clear).pack(side='right', padx=2)
@@ -348,8 +348,8 @@ class TerminalPane:
         body.pack(fill='both', expand=True)
         self.text = tk.Text(
             body, width=TERMINAL_COLS, height=TERMINAL_ROWS, wrap='none',
-            font=('Monospace', 9), bg='#101010', fg='#d0d0d0',
-            insertbackground='#d0d0d0', highlightthickness=0, state='disabled',
+            font=('Monospace', 9), bg='#101010', fg='#ffffff',
+            insertbackground='#ffffff', highlightthickness=0, state='disabled',
         )
         tvbar = tk.Scrollbar(body, orient='vertical', command=self.text.yview, width=16)
         thbar = tk.Scrollbar(frame, orient='horizontal', command=self.text.xview)
@@ -371,7 +371,7 @@ class TerminalPane:
         # Colour tags for the tailed failures, one per stage.
         for stage, colour in self.ERROR_COLOURS.items():
             self.text.tag_configure(f'err-{stage}', foreground=colour)
-        self.text.tag_configure('err-trace', foreground='#9a9a9a')
+        self.text.tag_configure('err-trace', foreground='#ffffff')
 
         # Start reading the error log from its current end, so opening the
         # window does not replay every failure since the machine was built.
@@ -409,7 +409,7 @@ class TerminalPane:
         self.stopping = False
         self.write(f'--- {os.path.basename(self.script)} started, '
                    f'pid {self.child.pid} ---\n')
-        self.status.configure(text=f'running, pid {self.child.pid}', fg='#006600')
+        self.status.configure(text=f'running, pid {self.child.pid}', fg='#39ff14')
         self.reader = threading.Thread(target=self.read_pipe, args=(self.child,),
                                        daemon=True)
         self.reader.start()
@@ -430,7 +430,7 @@ class TerminalPane:
 
     def stop(self):
         if not self.child or self.child.poll() is not None:
-            self.status.configure(text='not running', fg='#555555')
+            self.status.configure(text='not running', fg='#ffffff')
             return
         self.stopping = True
         # Ask first; a scheduler that is mid-write to the camera gets to
@@ -440,7 +440,7 @@ class TerminalPane:
             self.child.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.child.kill()
-        self.status.configure(text='stopped', fg='#555555')
+        self.status.configure(text='stopped', fg='#ffffff')
 
     def restart(self):
         self.stop()
@@ -584,7 +584,7 @@ class Window:
             self.host,
             text=(f'{count} controls read from {DEVICE}' if count
                   else f'No controls readable from {DEVICE} - is the camera plugged in?'),
-            font=('Helvetica', 9), fg='#003366',
+            font=('Helvetica', 9), fg='#ffffff',
         ).pack()
 
         # The whole window below the heading is one tall scrolling page, in
@@ -781,7 +781,7 @@ class Window:
                   command=self.on_check_camera).pack(side='right', padx=2)
         self.led_status = tk.Label(
             self.right, text='', anchor='w', justify='left',
-            font=('Helvetica', 8), wraplength=310, fg='#333333')
+            font=('Helvetica', 8), wraplength=310, fg='#ffffff')
         self.led_status.pack(fill='x', padx=6)
         self.refresh_led_status()
 
@@ -798,7 +798,7 @@ class Window:
         except Exception as problem:                           # noqa: BLE001
             worked, text = False, f'could not ask the camera: {problem}'
         self.led_status.configure(text=text,
-                                  fg='#333333' if worked else '#884400')
+                                  fg='#ffffff' if worked else '#ffff00')
         # A camera with no LED control keeps the buttons, greyed, rather than
         # losing them - so the row still answers the question "can I?" next
         # time rather than looking like a feature that was never there.
@@ -808,14 +808,14 @@ class Window:
 
     def on_led(self, mode):
         self.led_status.configure(text=f'asking the camera for LED {mode}...',
-                                  fg='#003366')
+                                  fg='#ffffff')
         self.root.update()
         try:
             worked, text = webcam_led.set_mode(mode, DEVICE)
         except Exception as problem:                           # noqa: BLE001
             worked, text = False, f'could not reach the camera: {problem}'
         self.led_status.configure(text=text,
-                                  fg='#0a7a2a' if worked else '#aa0000')
+                                  fg='#39ff14' if worked else '#aa0000')
         if not worked and webcam_errors is not None:
             webcam_errors.note('camera', f'LED {mode}: {text}')
 
@@ -858,7 +858,7 @@ class Window:
         ).pack(fill='x', padx=6)
 
         tk.Label(self.right, text=self.meter.range_report(), anchor='w', justify='left',
-                 font=('Helvetica', 8), wraplength=310, fg='#003366').pack(fill='x', padx=6)
+                 font=('Helvetica', 8), wraplength=310, fg='#ffffff').pack(fill='x', padx=6)
 
         snap_row = tk.Frame(self.right)
         snap_row.pack(fill='x', padx=6)
@@ -899,7 +899,7 @@ class Window:
         # Where to read back what went wrong hours ago, since the lines above
         # only ever show the latest thing.
         tk.Label(self.right, text=f'Error log: {LOG_FILE}', anchor='w', justify='left',
-                 font=('Helvetica', 8), wraplength=310, fg='#555555').pack(fill='x', padx=6)
+                 font=('Helvetica', 8), wraplength=310, fg='#ffffff').pack(fill='x', padx=6)
 
     # ---- the active brain's details, under the terminal ----
 
@@ -932,13 +932,13 @@ class Window:
         # moment, which is the thing worth knowing before deleting one.
         self.brain_active = tk.Label(
             frame, text='active brain: reading...', anchor='w', justify='left',
-            font=('Helvetica', 9, 'bold'), fg='#006633')
+            font=('Helvetica', 9, 'bold'), fg='#39ff14')
         self.brain_active.pack(fill='x', padx=4, pady=(2, 0))
 
         bar = tk.Frame(frame)
         bar.pack(fill='x')
         self.brain_status = tk.Label(bar, text='reading the brain...', anchor='w',
-                                     font=('Helvetica', 8, 'bold'), fg='#003366')
+                                     font=('Helvetica', 8, 'bold'), fg='#ffffff')
         self.brain_status.pack(side='left', padx=4)
         tk.Button(bar, text='Refresh', font=('Helvetica', 8),
                   command=self.refresh_brain_info).pack(side='right', padx=2)
@@ -1002,11 +1002,11 @@ class Window:
         self.brain_train_button.pack(side='left')
         self.train_status = tk.Label(train_row, text=self.train_summary(),
                                      font=('Helvetica', 8), anchor='w',
-                                     justify='left', wraplength=360, fg='#003366')
+                                     justify='left', wraplength=360, fg='#ffffff')
         self.train_status.pack(side='left', padx=6)
 
         tk.Label(train, anchor='w', justify='left', font=('Helvetica', 8),
-                 wraplength=420, fg='#555555',
+                 wraplength=420, fg='#ffffff',
                  text=('The camera box can only work while nothing else has the '
                        'camera: a V4L2 device lets one program stream at a time, '
                        'so while the recording software is running it is held and '
@@ -1020,7 +1020,7 @@ class Window:
         body = tk.Frame(frame)
         body.pack(fill='both', expand=True)
         self.brain_text = tk.Text(body, width=TERMINAL_COLS, height=22, wrap='word',
-                                  font=('Monospace', 9), bg='#101820', fg='#cfd8dc',
+                                  font=('Monospace', 9), bg='#101820', fg='#ffffff',
                                   highlightthickness=0, state='disabled')
         self.brain_text.pack(side='left', fill='both', expand=True)
         # The wheel bindings for the page are bind_all, so without these the
@@ -1065,12 +1065,12 @@ class Window:
     SUITE_BG = getattr(webcam_theme, 'BG', '#0d1117')
     SUITE_CARD = getattr(webcam_theme, 'PANEL', '#141d26')
     SUITE_EDGE = getattr(webcam_theme, 'EDGE', '#1f2a35')
-    SUITE_TEXT = getattr(webcam_theme, 'TEXT', '#c9d4de')
-    SUITE_DIM = getattr(webcam_theme, 'DIM', '#8b9bab')
+    SUITE_TEXT = getattr(webcam_theme, 'TEXT', '#ffffff')
+    SUITE_DIM = getattr(webcam_theme, 'DIM', '#ffffff')
     SUITE_STATE = {
-        'ACTIVE': getattr(webcam_theme, 'GOOD', '#4ade80'),
-        'TRAINED': getattr(webcam_theme, 'LINK', '#67b7f7'),
-        'PRETRAINED': getattr(webcam_theme, 'WARN', '#ffd166'),
+        'ACTIVE': getattr(webcam_theme, 'GOOD', '#39ff14'),
+        'TRAINED': getattr(webcam_theme, 'LINK', '#ffffff'),
+        'PRETRAINED': getattr(webcam_theme, 'WARN', '#ffff00'),
         'MISSING': getattr(webcam_theme, 'BAD', '#ff8c8c'),
     }
 
@@ -1734,7 +1734,7 @@ class Window:
         bar.pack(fill='x')
         self.lib_summary = tk.Label(bar, text='checking the libraries...',
                                     anchor='w', font=('Helvetica', 8),
-                                    fg='#003366')
+                                    fg='#ffffff')
         self.lib_summary.pack(side='left', padx=4)
         tk.Button(bar, text='Re-check', font=('Helvetica', 8),
                   command=self.refresh_status_tile).pack(side='right', padx=2)
@@ -1759,10 +1759,10 @@ class Window:
             title.grid(row=index, column=0, sticky='w')
             self.lib_titles[name] = title
             state = tk.Label(grid, text='checking...', anchor='w', width=12,
-                             font=('Monospace', 8), fg='#666666')
+                             font=('Monospace', 8), fg='#ffffff')
             state.grid(row=index, column=1, sticky='w')
             detail = tk.Label(grid, text='', anchor='w',
-                              font=('Helvetica', 8), fg='#333333',
+                              font=('Helvetica', 8), fg='#ffffff',
                               justify='left', wraplength=620)
             detail.grid(row=index, column=2, sticky='w')
             self.lib_rows[name] = (state, detail)
@@ -1775,7 +1775,7 @@ class Window:
         self.compare_note = tk.Label(
             pictures, text='no comparison frames yet - they are written the '
                            'next time a snapshot is corrected',
-            anchor='w', font=('Helvetica', 8), fg='#003366', justify='left',
+            anchor='w', font=('Helvetica', 8), fg='#ffffff', justify='left',
             wraplength=740)
         self.compare_note.pack(fill='x', pady=(0, 2))
 
@@ -1802,17 +1802,17 @@ class Window:
                 blank = ('(nothing found to crop yet)'
                          if name.startswith('crop-') else '(not written yet)')
                 picture = tk.Label(cell, text=blank,
-                                   font=('Helvetica', 8), fg='#888888',
+                                   font=('Helvetica', 8), fg='#ffffff',
                                    bg='#101010', width=46, height=height)
                 picture.pack()
                 tk.Label(cell, text=caption, font=('Helvetica', 8),
-                         anchor='w', fg='#222222').pack(fill='x')
+                         anchor='w', fg='#ffffff').pack(fill='x')
                 self.compare_labels[name] = picture
 
         legend = tk.Frame(pictures)
         legend.pack(fill='x', pady=(2, 0))
         tk.Label(legend, text='boxes:', font=('Helvetica', 8),
-                 fg='#333333').pack(side='left')
+                 fg='#ffffff').pack(side='left')
         tk.Button(legend, text='Original image, full size',
                   font=('Helvetica', 8),
                   command=self.open_original_window).pack(side='right', padx=2)
@@ -1870,7 +1870,7 @@ class Window:
         bar.pack(fill='x', padx=4, pady=(2, 0))
         self.lock_summary = tk.Label(bar, text='', anchor='w',
                                      font=('Helvetica', 8, 'bold'),
-                                     fg='#003366')
+                                     fg='#ffffff')
         self.lock_summary.pack(side='left', padx=4)
         tk.Button(bar, text='Unlock - meter the whole frame again',
                   font=('Helvetica', 8),
@@ -1879,7 +1879,7 @@ class Window:
                   command=self.load_lock_crops).pack(side='right', padx=2)
 
         tk.Label(frame, anchor='w', justify='left', font=('Helvetica', 8),
-                 fg='#333333', wraplength=740,
+                 fg='#ffffff', wraplength=740,
                  text=('Click a picture, or press its Lock button, to make '
                        'that object the target. The light meter then exposes '
                        'for it instead of for the whole frame, and the '
@@ -1897,17 +1897,17 @@ class Window:
         self.lock_current_image = None
         self.lock_current_label = tk.Label(current, text='(none)',
                                            font=('Helvetica', 8),
-                                           fg='#888888', bg='#101010',
+                                           fg='#ffffff', bg='#101010',
                                            width=20, height=5)
         self.lock_current_label.pack(side='left', padx=6)
         self.lock_current_note = tk.Label(current, text='', anchor='w',
                                           justify='left',
-                                          font=('Helvetica', 8), fg='#333333',
+                                          font=('Helvetica', 8), fg='#ffffff',
                                           wraplength=520)
         self.lock_current_note.pack(side='left', fill='x', expand=True)
 
         self.lock_note = tk.Label(frame, text='', anchor='w',
-                                  font=('Helvetica', 8), fg='#666666',
+                                  font=('Helvetica', 8), fg='#ffffff',
                                   justify='left', wraplength=740)
         self.lock_note.pack(fill='x', padx=6)
 
@@ -1930,7 +1930,7 @@ class Window:
             picture.bind('<Button-1>',
                          lambda _event, which=index: self.on_lock_pick(which))
             caption = tk.Label(cell, text='', font=('Helvetica', 7),
-                               fg='#222222', anchor='w')
+                               fg='#ffffff', anchor='w')
             caption.pack(fill='x')
             button = tk.Button(cell, text='Lock', font=('Helvetica', 7),
                                state='disabled',
@@ -2000,13 +2000,13 @@ class Window:
             self.lock_note.configure(
                 text=f'{len(crops)} of the newest detections shown, newest '
                      f'first - from {os.path.dirname(crops[0]["path"])}',
-                fg='#666666')
+                fg='#ffffff')
         else:
             self.lock_note.configure(
                 text='no detections yet - these boxes fill up as the '
                      'detector finds cars and people in the corrected '
                      'frames, so an empty panel on a first run is normal',
-                fg='#666666')
+                fg='#ffffff')
         self.refresh_lock_summary()
 
     def refresh_lock_summary(self):
@@ -2016,14 +2016,14 @@ class Window:
         try:
             data = webcam_lock.read_lock()
             self.lock_summary.configure(text=webcam_lock.describe(),
-                                        fg='#006600' if data else '#003366')
+                                        fg='#39ff14' if data else '#ffffff')
         except Exception as problem:                           # noqa: BLE001
             self.lock_summary.configure(text=f'could not read the lock: '
                                              f'{problem}', fg='#aa0000')
             return
         if not data:
             self.lock_current_label.configure(image='', text='(none)',
-                                              fg='#888888', width=20, height=5)
+                                              fg='#ffffff', width=20, height=5)
             self.lock_current_image = None
             self.lock_current_note.configure(
                 text='nothing locked - the light meter is exposing for the '
@@ -2128,7 +2128,7 @@ class Window:
         if self.status_worker and self.status_worker.is_alive():
             return
         self.lib_summary.configure(text='checking the libraries...',
-                                   fg='#003366')
+                                   fg='#ffffff')
 
         def work():
             try:
@@ -2174,20 +2174,20 @@ class Window:
             state, detail = widgets
             if row['ok']:
                 working += 1
-                state.configure(text='working', fg='#006600')
+                state.configure(text='working', fg='#39ff14')
             else:
                 state.configure(text='NOT working', fg='#aa0000')
             version = f"{row['version']}  " if row['version'] else ''
             hint = f"   try: {row['hint']}" if row['hint'] and not row['ok'] else ''
             detail.configure(text=f"{version}{row['detail']}{hint}",
-                             fg='#333333' if row['ok'] else '#aa0000')
+                             fg='#ffffff' if row['ok'] else '#aa0000')
         total = len(rows)
         newest = webcam_errors.last_line() if webcam_errors else ''
         summary = f'{working} of {total} working'
         if newest:
             summary += f'   -   newest failure: {newest[:90]}'
         self.lib_summary.configure(
-            text=summary, fg='#003366' if working == total else '#aa0000')
+            text=summary, fg='#ffffff' if working == total else '#aa0000')
 
     # ---- the four frames ----
 
@@ -2231,7 +2231,7 @@ class Window:
                 blank = ('(nothing found to crop yet)'
                          if thumb['name'].startswith('crop-')
                          else '(not written yet)')
-                label.configure(image='', text=blank, fg='#888888')
+                label.configure(image='', text=blank, fg='#ffffff')
                 self.compare_images.pop(thumb['name'], None)
                 continue
             try:
@@ -2251,11 +2251,11 @@ class Window:
         note = webcam_status.compare_note()
         if shown:
             self.compare_note.configure(
-                text=note or f'{shown} of 4 frames shown', fg='#003366')
+                text=note or f'{shown} of 4 frames shown', fg='#ffffff')
         else:
             self.compare_note.configure(
                 text='no comparison frames yet - they are written the next '
-                     'time a snapshot is corrected', fg='#666666')
+                     'time a snapshot is corrected', fg='#ffffff')
 
     def poll_compare_frames(self):
         """Pick up a newer set of frames without being asked.
@@ -2309,7 +2309,7 @@ class Window:
             self.led_status.configure(text='webcam_verify.py is not here',
                                       fg='#aa0000')
             return
-        self.led_status.configure(text='asking the camera...', fg='#003366')
+        self.led_status.configure(text='asking the camera...', fg='#ffffff')
         self.root.update()
         try:
             now = webcam_verify.read_controls(DEVICE)
@@ -2337,7 +2337,7 @@ class Window:
             except OSError:
                 age = ''
         self.led_status.configure(text=f"{', '.join(bits)}{age} - {why}",
-                                  fg='#0a7a2a' if ok else '#aa0000')
+                                  fg='#39ff14' if ok else '#aa0000')
         if webcam_errors is not None:
             webcam_errors.note('camera', f"checked: {', '.join(bits)} - {why}")
 
@@ -2371,7 +2371,7 @@ class Window:
         bar = tk.Frame(window)
         bar.pack(fill='x', padx=6, pady=4)
         self.original_note = tk.Label(
-            bar, text='', font=('Helvetica', 9), anchor='w', fg='#003366',
+            bar, text='', font=('Helvetica', 9), anchor='w', fg='#ffffff',
             justify='left')
         self.original_note.pack(side='left', fill='x', expand=True)
         tk.Button(bar, text='Refresh', font=('Helvetica', 8),
@@ -2381,7 +2381,7 @@ class Window:
                   command=window.destroy).pack(side='right', padx=2)
 
         self.original_label = tk.Label(window, text='(nothing corrected yet)',
-                                       bg='#101010', fg='#888888',
+                                       bg='#101010', fg='#ffffff',
                                        font=('Helvetica', 10))
         self.original_label.pack(fill='both', expand=True, padx=6, pady=(0, 6))
         self.refresh_original_window()
@@ -2417,7 +2417,7 @@ class Window:
             self.original_label.configure(
                 image='', text='(no frame has been corrected yet - the '
                                'original is written at the same time as the '
-                               'corrected copy)', fg='#888888')
+                               'corrected copy)', fg='#ffffff')
             return
         try:
             picture = tk.PhotoImage(file=big['path'])
@@ -2523,7 +2523,7 @@ class Window:
                        command=self.on_enhance_toggle).pack(fill='x')
 
         tk.Label(self.right, anchor='w', justify='left', font=('Helvetica', 8),
-                 wraplength=310, fg='#555555',
+                 wraplength=310, fg='#ffffff',
                  text=('The first box only runs it once the gain is past half its range, '
                        'which is the same test the sharpness uses for night - a floodlit '
                        'yard at midnight does not get it and an overcast dusk does. The '
@@ -2543,7 +2543,7 @@ class Window:
                  ).pack(fill='x', padx=6)
 
         tk.Label(self.right, text=self.enhancer_report(), anchor='w', justify='left',
-                 font=('Helvetica', 8), wraplength=310, fg='#003366').pack(fill='x', padx=6)
+                 font=('Helvetica', 8), wraplength=310, fg='#ffffff').pack(fill='x', padx=6)
 
         row = tk.Frame(self.right)
         row.pack(fill='x', padx=6, pady=2)
