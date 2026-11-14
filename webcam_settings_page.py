@@ -1121,8 +1121,14 @@ class Window:
             bar.pack(fill='x', padx=6, pady=(5, 0))
             tk.Label(bar, text=title, bg=self.SUITE_CARD, fg=self.SUITE_TEXT,
                      font=('Helvetica', 9, 'bold')).pack(side='left')
+            # The state is a filled badge rather than coloured lettering:
+            # the fill is what carries it at a glance and the word says
+            # which one it is. The lettering colour is picked against the
+            # fill when it is set, so a bright fill takes dark ink and a
+            # deep one takes white.
             state = tk.Label(bar, text='...', bg=self.SUITE_CARD,
-                             fg=self.SUITE_DIM, font=('Helvetica', 7, 'bold'))
+                             fg=self.SUITE_DIM, padx=5,
+                             font=('Helvetica', 7, 'bold'))
             state.pack(side='right')
             body = tk.Label(card, text='', bg=self.SUITE_CARD,
                             fg=self.SUITE_DIM, anchor='w', justify='left',
@@ -1211,6 +1217,24 @@ class Window:
             pass
         return (state, lines)
 
+    @staticmethod
+    def badge_ink(fill):
+        """White or near-black on this fill, whichever can be read on it.
+
+        The four fills are not equally light - a bright green takes dark
+        lettering and a deep red takes white - so the choice is measured
+        rather than picked, which is the only way a badge set stays legible
+        when a colour in it changes.
+        """
+        if webcam_theme:
+            try:
+                on_white = webcam_theme._contrast('#ffffff', fill) or 0
+                on_ink = webcam_theme._contrast('#10171e', fill) or 0
+                return '#ffffff' if on_white >= on_ink else '#10171e'
+            except Exception:                                  # noqa: BLE001
+                pass
+        return '#10171e'
+
     def refresh_brain_suite(self):
         """Redraw every card. Called wherever the brain details are."""
         if not getattr(self, 'brain_suite_cards', None):
@@ -1230,8 +1254,9 @@ class Window:
                 state, lines = ('MISSING', [f'could not read it: {problem}'])
             if state != 'MISSING':
                 ready += 1
-            card['state'].configure(text=state,
-                                    fg=self.SUITE_STATE.get(state, self.SUITE_DIM))
+            fill = self.SUITE_STATE.get(state, self.SUITE_DIM)
+            card['state'].configure(text=f' {state} ', bg=fill,
+                                    fg=self.badge_ink(fill))
             card['body'].configure(text='\n'.join(lines))
         total = len(self.SUITE_FAMILIES)
         self.brain_suite_count.configure(text=f'{ready}/{total}')
